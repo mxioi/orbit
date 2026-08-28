@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+
+# Model weights and downloaded binaries -- large, re-downloadable, don't belong in git
+models/
+piper_models/
+
+# Experimental venv + extracted CUDA DLLs from the GPU-acceleration investigation
+venv311/
+extra_dlls/
+cudnn9/
+cudnn9_download/
+
+# Local-only secrets
+.turnstone_token
+*.token

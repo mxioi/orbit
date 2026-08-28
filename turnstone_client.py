@@ -9,13 +9,20 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-# Points at this project's own homelab Turnstone console by default --
-# override via env var for any other deployment. The IP itself isn't
-# sensitive (private RFC1918 range, not reachable or meaningful outside
-# that LAN), but hardcoding it made the client unusable anywhere else
-# without editing source, which is the real reason this is now a
-# variable rather than a literal.
-CONSOLE_BASE = os.environ.get("TURNSTONE_CONSOLE_BASE", "http://REDACTED-LAN-IP:8095/v1/api")
+# Same override pattern as TURNSTONE_TOKEN below: env var first, then a
+# local gitignored file, then a placeholder that's obviously not a real
+# address (deliberately not this project's own homelab IP, even as a
+# "documented default" -- no reason to publish that once this repo is
+# public, and it isn't needed for the client to be usable: set the env
+# var or drop the real address in .turnstone_console_base once, same as
+# the token file).
+CONSOLE_BASE = os.environ.get("TURNSTONE_CONSOLE_BASE", "")
+if not CONSOLE_BASE:
+    _console_base_file = os.path.join(os.path.dirname(__file__), ".turnstone_console_base")
+    if os.path.isfile(_console_base_file):
+        CONSOLE_BASE = open(_console_base_file, encoding="utf-8").read().strip()
+if not CONSOLE_BASE:
+    CONSOLE_BASE = "http://your-turnstone-host:8095/v1/api"
 
 # Never hardcode the token here -- it goes into git now. Set it via env var,
 # or drop it in a local .turnstone_token file (gitignored) as a fallback.

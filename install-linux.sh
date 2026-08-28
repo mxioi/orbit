@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Linux setup for voice-spike. Verified live against a real Ubuntu 24.04
+# Linux setup for Orbit. Verified live against a real Ubuntu 24.04
 # (WSL2 + WSLg, though nothing here is WSL-specific except where noted) --
 # both of the two highest-risk unknowns for a Linux port, real-time audio
 # I/O and a native GUI window, were confirmed genuinely working, not just

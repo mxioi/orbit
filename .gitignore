@@ -12,8 +12,9 @@ extra_dlls/
 cudnn9/
 cudnn9_download/
 
-# Local-only secrets
+# Local-only secrets / per-deployment config
 .turnstone_token
+.turnstone_console_base
 *.token
 
 # Per-machine user preference (VAD sensitivity etc.), not project config

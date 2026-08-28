@@ -9,7 +9,13 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-CONSOLE_BASE = "http://REDACTED-LAN-IP:8095/v1/api"
+# Points at this project's own homelab Turnstone console by default --
+# override via env var for any other deployment. The IP itself isn't
+# sensitive (private RFC1918 range, not reachable or meaningful outside
+# that LAN), but hardcoding it made the client unusable anywhere else
+# without editing source, which is the real reason this is now a
+# variable rather than a literal.
+CONSOLE_BASE = os.environ.get("TURNSTONE_CONSOLE_BASE", "http://REDACTED-LAN-IP:8095/v1/api")
 
 # Never hardcode the token here -- it goes into git now. Set it via env var,
 # or drop it in a local .turnstone_token file (gitignored) as a fallback.
@@ -87,7 +93,10 @@ def create_conversation(model="", persona=TURNSTONE_PERSONA, first_message=""):
     # were ever compromised or pointed at something untrusted). Constrain
     # to hosts we actually expect this homelab's single node to report.
     node_host = urllib.parse.urlparse(node_url).hostname
-    allowed_hosts = {"turnstone", "REDACTED-LAN-IP", "127.0.0.1", "localhost"}
+    # Derived from CONSOLE_BASE (not a second hardcoded copy of the IP) so
+    # overriding TURNSTONE_CONSOLE_BASE for a different deployment doesn't
+    # leave this allowlist pointed at the wrong host.
+    allowed_hosts = {"turnstone", urllib.parse.urlparse(CONSOLE_BASE).hostname, "127.0.0.1", "localhost"}
     if node_host not in allowed_hosts:
         raise SystemExit(
             f"refusing to send credentials to unexpected node_url host {node_host!r} "

@@ -61,10 +61,29 @@ class AssistantState:
         self.muted = False
         self.ws_id = None
         self.shutdown = threading.Event()
-        # Set by mic_loop on a barge-in (speech detected while SPEAKING);
-        # tts.speak()'s playback loop checks this and cuts audio immediately.
-        # Cleared at the start of every new speak() call.
-        self.tts_stop_event = threading.Event()
+        # Current TTS playback thread + its OWN stop Event, if any is
+        # active. A fresh Event() is created per turn rather than reusing/
+        # clearing one shared instance -- reusing one caused a real bug:
+        # if turn N's speak() thread hadn't yet checked is_set() by the
+        # time turn N+1 called .clear() on the SAME object, N's thread
+        # would never see the stop signal and kept playing while N+1's
+        # audio also started, i.e. two overlapping TTS streams. A fresh
+        # object per turn makes that impossible -- old and new threads
+        # can never reference the same flag.
+        self._tts_thread = None
+        self._tts_stop_event = None
+
+    def stop_tts_if_speaking(self):
+        """Signal the CURRENT tts thread (if any) to stop and block until
+        it actually has -- called from mic_loop on a barge-in. Blocking
+        here (briefly, ~50-100ms per the measured stop_event response
+        time) is what turns "asked it to stop" into "guaranteed stopped
+        before anything else starts speaking", which a fire-and-forget
+        .set() with no join doesn't guarantee."""
+        if self._tts_stop_event is not None:
+            self._tts_stop_event.set()
+        if self._tts_thread is not None:
+            self._tts_thread.join(timeout=2.0)
 
     def set_state(self, new_state):
         self.state = new_state
@@ -187,14 +206,14 @@ def process_utterance(app_state, whisper_model, piper_voice, audio):
     # possible before -- the one thread that could've noticed you talking
     # was busy sitting inside the TTS call.)
     app_state.set_state(SPEAKING)
-    app_state.tts_stop_event.clear()
+    stop_event = threading.Event()  # this turn's own -- see AssistantState's __init__ comment
 
     def _speak():
         try:
             tts.speak(
                 piper_voice, response,
                 on_amplitude=app_state.set_amplitude,
-                stop_event=app_state.tts_stop_event,
+                stop_event=stop_event,
             )
         except Exception as e:
             print(f"[tts] playback failed: {e!r}")
@@ -209,7 +228,10 @@ def process_utterance(app_state, whisper_model, piper_voice, audio):
             if app_state.state == SPEAKING:
                 app_state.set_state(LISTENING)
 
-    threading.Thread(target=_speak, daemon=True).start()
+    thread = threading.Thread(target=_speak, daemon=True)
+    app_state._tts_stop_event = stop_event
+    app_state._tts_thread = thread
+    thread.start()
 
 
 def mic_loop(app_state, whisper_model, piper_voice):
@@ -313,12 +335,16 @@ def mic_loop(app_state, whisper_model, piper_voice):
 
         if event == "start":
             if app_state.state == SPEAKING:
-                # Barge-in: cut TTS playback immediately. Everything else
-                # below is identical to a normal utterance start -- the
-                # interrupting speech just becomes the next turn once its
-                # own "end" fires further down.
+                # Barge-in: cut TTS playback and BLOCK until it's actually
+                # stopped (not just signaled) before continuing -- see
+                # AssistantState.stop_tts_if_speaking's docstring for why
+                # this guarantees no overlap instead of just hoping for
+                # good timing. Everything else below is identical to a
+                # normal utterance start -- the interrupting speech just
+                # becomes the next turn once its own "end" fires further
+                # down.
                 print("[mic] barge-in detected, interrupting TTS")
-                app_state.tts_stop_event.set()
+                app_state.stop_tts_if_speaking()
             recording_chunks = list(preroll) + recording_chunks
             preroll.clear()
             app_state.set_state(RECORDING)

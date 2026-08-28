@@ -234,22 +234,33 @@ document.getElementById('minimize-btn').addEventListener('click', () => {
 // harmlessly in a standalone browser tab.
 //
 // mousemove can fire 60-125+ times/sec, and each drag_move() is an async
-// round-trip over the JS<->Python bridge -- sending one per raw mousemove
-// event backed the bridge up and made the drag visibly choppy. Throttled
-// to at most one call per animation frame (~60fps) instead: mousemove just
-// records the latest position (cheap, synchronous), and a rAF loop sends
-// that position to Python only while it's actually changed.
+// round-trip over the JS<->Python bridge. Capping to one call per rAF
+// frame (~60fps) wasn't actually enough on its own: nothing stopped a
+// second call firing before the first one's promise resolved, so if any
+// single round-trip took longer than one frame, calls piled up faster
+// than they drained -- the window visibly trailing behind the cursor
+// with growing lag. Fixed with real backpressure: never more than one
+// drag_move in flight at a time, and always send the freshest known
+// position once the previous call finishes (skipping stale in-between
+// positions rather than queueing all of them).
 let dragging = false;
 let latestScreenPos = null;
 let lastSentScreenPos = null;
+let dragCallInFlight = false;
 
-function dragTick() {
-  if (dragging && latestScreenPos &&
+async function dragTick() {
+  if (dragging && !dragCallInFlight && latestScreenPos &&
       (!lastSentScreenPos || latestScreenPos[0] !== lastSentScreenPos[0] || latestScreenPos[1] !== lastSentScreenPos[1])) {
     if (window.pywebview && window.pywebview.api && window.pywebview.api.drag_move) {
-      window.pywebview.api.drag_move(latestScreenPos[0], latestScreenPos[1]);
+      const pos = latestScreenPos;
+      lastSentScreenPos = pos;
+      dragCallInFlight = true;
+      try {
+        await window.pywebview.api.drag_move(pos[0], pos[1]);
+      } finally {
+        dragCallInFlight = false;
+      }
     }
-    lastSentScreenPos = latestScreenPos;
   }
   requestAnimationFrame(dragTick);
 }

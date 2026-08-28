@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Push-to-talk CLI voice loop -- mic -> STT -> Turnstone -> TTS -> speakers.
 
 Keeps one Turnstone workstream open for the whole run so it's a real

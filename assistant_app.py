@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """GUI voice assistant: floating avatar window + VAD-driven listening (no
 push-to-talk) driving the same STT -> Turnstone -> TTS pipeline as
 voice_test.py.

@@ -137,22 +137,41 @@ def ask(ws_id, message, timeout_s=120, poll_interval=0.5, on_poll=None):
         _, detail = _call(
             "GET", f"/cluster/ws/{ws_id}/detail", params={"message_limit": 15}, base=CONSOLE_BASE
         )
-        # A new assistant row with NON-EMPTY content is the real completion
-        # signal. The researcher persona auto-checks a "memory pointer" on
-        # nearly every turn -- that shows up as an assistant row that's
-        # PURELY a tool call (content="", real payload in tool_calls),
-        # followed later by the actual text-bearing assistant row after the
-        # tool result comes back. Confirmed live: grabbing the tool-call
-        # row as "the answer" returns '' even though the real answer
-        # completes moments later in the same turn -- skip empty rows and
-        # keep polling for the one that actually has text.
         # NOTE: this endpoint's message dicts use "messages" (not "tail"
         # per the docs) and "_event_id" (underscore-prefixed, unlike
         # /history's bare "event_id") -- confirmed against a live response.
-        for msg in reversed(detail.get("messages", [])):
-            if (msg.get("role") == "assistant" and msg.get("_event_id") not in ids_before
-                    and msg.get("content", "").strip()):
-                return msg.get("content", "")
+        #
+        # A new assistant row with non-empty content is NOT a reliable
+        # completion signal on its own -- the researcher persona can emit
+        # a row that's simultaneously a text preamble AND a tool call
+        # (e.g. "The web search tool is having network issues, let me
+        # check memory..." with a tool_call attached), which has non-empty
+        # content but isn't the real answer; the actual answer can arrive
+        # in a LATER row up to ~10s afterward once the tool result comes
+        # back. Confirmed live via a raw diagnostic dump of this exact
+        # endpoint through a real tool-using turn -- grabbing the first
+        # new non-empty row returned the preamble, not the answer.
+        #
+        # `live.state` is the real ground truth: it stays "thinking"
+        # through every tool-call round and only goes "idle" once the
+        # whole turn (including all tool calls) has actually settled --
+        # confirmed against the same live dump. Wait for that, THEN take
+        # the last (not first) new non-empty assistant row, since a turn
+        # can emit several assistant rows in sequence and only the last
+        # one is guaranteed to be the final answer.
+        if detail.get("live", {}).get("state") != "idle":
+            continue
+
+        new_assistant_msgs = [
+            msg for msg in detail.get("messages", [])
+            if msg.get("role") == "assistant" and msg.get("_event_id") not in ids_before
+            and msg.get("content", "").strip()
+        ]
+        if new_assistant_msgs:
+            return new_assistant_msgs[-1].get("content", "")
+        # live.state is idle but no new assistant content yet -- likely
+        # caught between /send landing and the server picking it up
+        # (state hasn't flipped to "thinking" yet). Keep polling.
 
     return ""
 

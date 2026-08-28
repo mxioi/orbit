@@ -73,28 +73,42 @@ def strip_markdown_for_speech(text):
     return text.strip()
 
 
-def speak(piper_voice, text, on_amplitude=None):
+def speak(piper_voice, text, on_amplitude=None, stop_event=None):
     """Synthesize and play text. If on_amplitude is given, it's called
     repeatedly during playback with a 0..1 loudness estimate (for driving
-    the avatar's speech-reactive swell) and once more with 0.0 when done."""
+    the avatar's speech-reactive swell) and once more with 0.0 when done.
+
+    If stop_event is given (a threading.Event), playback checks it before
+    writing each ~80ms block and cuts immediately via stream.abort() if
+    it's set -- for barge-in, where "immediately" matters (stream.stop()
+    would instead let whatever's already buffered on the audio device
+    finish playing out first, not the instant cutoff barge-in needs).
+    Returns True if playback completed normally, False if it was stopped
+    early via stop_event."""
     clean = strip_markdown_for_speech(text)
     chunks = list(piper_voice.synthesize(clean, PIPER_SYNTHESIS_CONFIG))
     if not chunks:
-        return
+        return True
     audio = np.concatenate([c.audio_int16_array for c in chunks])
     sample_rate = chunks[0].sample_rate
 
-    if on_amplitude is None:
+    if on_amplitude is None and stop_event is None:
         sd.play(audio, sample_rate)
         sd.wait()
-        return
+        return True
 
     # Stream in small blocks (~80ms) instead of one sd.play() call so the
-    # avatar can react to the audio's actual loudness envelope as it plays,
-    # rather than jumping straight to a static "speaking" pose.
+    # avatar can react to the audio's actual loudness envelope as it plays
+    # (rather than jumping straight to a static "speaking" pose), and so
+    # stop_event gets checked often enough for barge-in to feel immediate.
     block = max(1, int(sample_rate * 0.08))
+    completed = True
     with sd.OutputStream(samplerate=sample_rate, channels=1, dtype="int16") as stream:
         for i in range(0, len(audio), block):
+            if stop_event is not None and stop_event.is_set():
+                stream.abort()  # discard whatever's still buffered -- immediate silence
+                completed = False
+                break
             seg = audio[i:i + block]
             rms = float(np.sqrt(np.mean((seg.astype(np.float32) / 32768.0) ** 2)))
             # Empirical scale, not audibly verified (can't hear it myself) --
@@ -102,6 +116,9 @@ def speak(piper_voice, text, on_amplitude=None):
             # 1:1 mapping read as barely-moving; 4x gave visible swell in
             # the earlier avatar amplitude tests. Retune by ear if it looks
             # under/over-reactive once actually watched during real speech.
-            on_amplitude(min(1.0, rms * 4.0))
+            if on_amplitude:
+                on_amplitude(min(1.0, rms * 4.0))
             stream.write(seg)
-    on_amplitude(0.0)
+    if on_amplitude:
+        on_amplitude(0.0)
+    return completed

@@ -2,11 +2,14 @@
 push-to-talk) driving the same STT -> Turnstone -> TTS pipeline as
 voice_test.py.
 
-Barge-in (interrupting TTS playback mid-speech) is explicitly out of scope
-for this phase -- while the assistant is THINKING or SPEAKING, incoming mic
-audio is simply discarded, same as push-to-talk always effectively did by
-not listening between turns. That's the next phase, once this one is
-confirmed solid.
+Barge-in: interrupting TTS mid-speech is supported, but ONLY while SPEAKING
+-- audio is still fully discarded during THINKING (interrupting a live
+Turnstone round-trip is out of scope; server-side work isn't cancellable
+from here anyway). By the time SPEAKING starts, the Turnstone call has
+already returned -- we're just replaying local audio -- so a barge-in never
+collides with an in-flight server request; it just cuts local playback and
+starts an independent new turn. See mic_loop's audio callback and the
+event == "start" handling below for where this is wired in.
 """
 import os
 import queue
@@ -44,11 +47,13 @@ TRAIL_TRIM_S = 0.5
 
 class AssistantState:
     """Single mutable owner of everything the mic thread and the pipeline
-    thread both touch. Plain attributes, not locks -- by construction only
-    one of those two threads is ever "active" at a time (the mic thread
-    stops acting on `state` the moment it flips to THINKING/SPEAKING, and
-    only the pipeline thread changes state during that stretch), so
-    Python's GIL is enough here without real synchronization."""
+    thread(s) both touch. Plain attributes, not locks -- by construction
+    only one thread is ever the "active writer" of `state` at a time (the
+    mic thread stops acting on it during THINKING; during SPEAKING, the mic
+    thread and the TTS thread both touch it, but per the barge-in race
+    analysis in process_utterance()/mic_loop, any ordering between them
+    still converges on the correct final state), so Python's GIL is enough
+    here without real synchronization."""
 
     def __init__(self):
         self.window = None  # attached right after webview.create_window()
@@ -56,6 +61,10 @@ class AssistantState:
         self.muted = False
         self.ws_id = None
         self.shutdown = threading.Event()
+        # Set by mic_loop on a barge-in (speech detected while SPEAKING);
+        # tts.speak()'s playback loop checks this and cuts audio immediately.
+        # Cleared at the start of every new speak() call.
+        self.tts_stop_event = threading.Event()
 
     def set_state(self, new_state):
         self.state = new_state
@@ -152,6 +161,7 @@ def process_utterance(app_state, whisper_model, piper_voice, audio):
         text = stt.transcribe(whisper_model, audio)
         print(f"You said: {text!r}")
         if not text.strip():
+            app_state.set_state(LISTENING)
             return
 
         if app_state.ws_id is None:
@@ -160,14 +170,46 @@ def process_utterance(app_state, whisper_model, piper_voice, audio):
         else:
             response = tc.ask(app_state.ws_id, text)
         print(f"Turnstone: {response!r}")
-
-        if response.strip():
-            app_state.set_state(SPEAKING)
-            tts.speak(piper_voice, response, on_amplitude=app_state.set_amplitude)
     except Exception as e:
         print(f"[process_utterance] turn failed, recovering to LISTENING: {e!r}")
-    finally:
         app_state.set_state(LISTENING)
+        return
+
+    if not response.strip():
+        app_state.set_state(LISTENING)
+        return
+
+    # TTS runs on its own thread and this function returns immediately
+    # once it's kicked off -- NOT blocking here is what lets mic_loop's
+    # thread keep consuming audio/running VAD during playback, which is
+    # what makes barge-in possible at all. (Earlier versions of this
+    # function blocked on tts.speak() directly; that's why barge-in wasn't
+    # possible before -- the one thread that could've noticed you talking
+    # was busy sitting inside the TTS call.)
+    app_state.set_state(SPEAKING)
+    app_state.tts_stop_event.clear()
+
+    def _speak():
+        try:
+            tts.speak(
+                piper_voice, response,
+                on_amplitude=app_state.set_amplitude,
+                stop_event=app_state.tts_stop_event,
+            )
+        except Exception as e:
+            print(f"[tts] playback failed: {e!r}")
+        finally:
+            # Only reset to LISTENING if nothing else already moved us on
+            # (a barge-in sets state to RECORDING itself, from mic_loop's
+            # thread, the moment it fires -- whichever of these two race
+            # ends up running last, the final state is correct either way:
+            # if barge-in already fired, don't stomp RECORDING back to
+            # LISTENING; if playback just finished naturally, do the
+            # normal reset).
+            if app_state.state == SPEAKING:
+                app_state.set_state(LISTENING)
+
+    threading.Thread(target=_speak, daemon=True).start()
 
 
 def mic_loop(app_state, whisper_model, piper_voice):
@@ -177,11 +219,12 @@ def mic_loop(app_state, whisper_model, piper_voice):
 
     def callback(indata, frames, time_info, status):
         # Keep the realtime audio callback cheap -- just hand the chunk
-        # off, no VAD/state work here. Drop audio entirely while muted or
-        # mid-turn so the queue doesn't quietly grow for the seconds a
-        # Turnstone round-trip + TTS playback can take -- we're discarding
-        # it anyway per the no-barge-in-yet policy in the module docstring.
-        if app_state.muted or app_state.state in (THINKING, SPEAKING):
+        # off, no VAD/state work here. Still drop audio during THINKING
+        # (interrupting a live Turnstone round-trip is out of scope, and
+        # we'd otherwise just be queueing audio nothing will consume for
+        # however long that takes) and while muted. SPEAKING is let
+        # through -- that's what makes barge-in possible.
+        if app_state.muted or app_state.state == THINKING:
             return
         audio_q.put(indata[:, 0].copy())
 
@@ -244,7 +287,7 @@ def mic_loop(app_state, whisper_model, piper_voice):
             was_muted = False
             app_state.set_state(LISTENING)
 
-        if app_state.state in (THINKING, SPEAKING):
+        if app_state.state == THINKING:
             time.sleep(0.05)
             continue
 
@@ -269,6 +312,13 @@ def mic_loop(app_state, whisper_model, piper_voice):
             preroll.append(chunk)
 
         if event == "start":
+            if app_state.state == SPEAKING:
+                # Barge-in: cut TTS playback immediately. Everything else
+                # below is identical to a normal utterance start -- the
+                # interrupting speech just becomes the next turn once its
+                # own "end" fires further down.
+                print("[mic] barge-in detected, interrupting TTS")
+                app_state.tts_stop_event.set()
             recording_chunks = list(preroll) + recording_chunks
             preroll.clear()
             app_state.set_state(RECORDING)

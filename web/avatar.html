@@ -232,10 +232,33 @@ document.getElementById('minimize-btn').addEventListener('click', () => {
 // (assistant_app.py's Api.drag_move) to reposition the window via
 // pywebview's own documented window.move() API each step. No-ops
 // harmlessly in a standalone browser tab.
+//
+// mousemove can fire 60-125+ times/sec, and each drag_move() is an async
+// round-trip over the JS<->Python bridge -- sending one per raw mousemove
+// event backed the bridge up and made the drag visibly choppy. Throttled
+// to at most one call per animation frame (~60fps) instead: mousemove just
+// records the latest position (cheap, synchronous), and a rAF loop sends
+// that position to Python only while it's actually changed.
 let dragging = false;
+let latestScreenPos = null;
+let lastSentScreenPos = null;
+
+function dragTick() {
+  if (dragging && latestScreenPos &&
+      (!lastSentScreenPos || latestScreenPos[0] !== lastSentScreenPos[0] || latestScreenPos[1] !== lastSentScreenPos[1])) {
+    if (window.pywebview && window.pywebview.api && window.pywebview.api.drag_move) {
+      window.pywebview.api.drag_move(latestScreenPos[0], latestScreenPos[1]);
+    }
+    lastSentScreenPos = latestScreenPos;
+  }
+  requestAnimationFrame(dragTick);
+}
+requestAnimationFrame(dragTick);
+
 document.getElementById('drag-region').addEventListener('mousedown', (e) => {
   if (e.button !== 0) return;
   dragging = true;
+  latestScreenPos = lastSentScreenPos = [e.screenX, e.screenY];
   if (window.pywebview && window.pywebview.api && window.pywebview.api.start_drag) {
     window.pywebview.api.start_drag(e.screenX, e.screenY);
   } else {
@@ -244,13 +267,12 @@ document.getElementById('drag-region').addEventListener('mousedown', (e) => {
 });
 document.addEventListener('mousemove', (e) => {
   if (!dragging || !(e.buttons & 1)) return;
-  if (window.pywebview && window.pywebview.api && window.pywebview.api.drag_move) {
-    window.pywebview.api.drag_move(e.screenX, e.screenY);
-  }
+  latestScreenPos = [e.screenX, e.screenY];
 });
 document.addEventListener('mouseup', () => {
   if (!dragging) return;
   dragging = false;
+  latestScreenPos = lastSentScreenPos = null;
   if (window.pywebview && window.pywebview.api && window.pywebview.api.end_drag) {
     window.pywebview.api.end_drag();
   }

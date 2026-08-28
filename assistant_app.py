@@ -130,9 +130,7 @@ class Api:
         if dx == 0 and dy == 0:
             return
         loc = self._app_state.window.native.Location
-        new_x, new_y = loc.X + dx, loc.Y + dy
-        self._app_state.window.move(new_x, new_y)
-        print(f"[drag] moved by ({dx},{dy}) -> ({new_x},{new_y})")
+        self._app_state.window.move(loc.X + dx, loc.Y + dy)
 
     def end_drag(self):
         self._last_drag_pos = None

@@ -8,7 +8,6 @@ audio is simply discarded, same as push-to-talk always effectively did by
 not listening between turns. That's the next phase, once this one is
 confirmed solid.
 """
-import ctypes
 import os
 import queue
 import sys
@@ -95,29 +94,48 @@ class Api:
 
     def __init__(self, app_state):
         self._app_state = app_state
+        self._last_drag_pos = None
 
     def toggle_mute(self, is_muted):
         print(f"[mic] {'muted' if is_muted else 'unmuted'}")
         self._app_state.set_muted(is_muted)
 
-    def start_drag(self):
-        """Called from avatar.html on mousedown in #drag-region. pywebview
-        6.2.1's Windows backend (edgechromium.py + winforms.py) has NO
-        built-in frameless-window dragging at all -- confirmed by reading
-        both files, neither references easy_drag or any drag handling;
-        only the legacy mshtml.py, plus qt.py/gtk.py/cocoa.py on other
-        platforms, implement it. This is the standard Win32 workaround:
-        releasing mouse capture and telling Windows the click landed on
-        the (nonexistent) title bar makes the OS itself drive the whole
-        drag natively -- smooth, correct, and exactly what mshtml.py's own
-        easy_drag does under the hood (WebBrowserEx.ReleaseCapture() +
-        WM_NCLBUTTONDOWN/HTCAPTION), just reimplemented here since
-        edgechromium.py doesn't wire that up for WebView2."""
-        hwnd = self._app_state.window.native.Handle.ToInt32()
-        WM_NCLBUTTONDOWN = 0x00A1
-        HTCAPTION = 2
-        ctypes.windll.user32.ReleaseCapture()
-        ctypes.windll.user32.SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0)
+    # --- Dragging ----------------------------------------------------
+    # pywebview 6.2.1's Windows backend (edgechromium.py + winforms.py) has
+    # NO built-in frameless-window dragging -- confirmed by reading both
+    # files, neither references easy_drag or any drag handling; only the
+    # legacy mshtml.py, plus qt.py/gtk.py/cocoa.py on other platforms,
+    # implement it. First attempt used the classic Win32 trick (release
+    # capture + send WM_NCLBUTTONDOWN/HTCAPTION to fake a title-bar click,
+    # same thing mshtml.py's easy_drag does) -- didn't move the window at
+    # all in testing, on either a mousedown or mousemove trigger, which
+    # points at the ctypes call itself rather than timing (a common gotcha:
+    # SendMessageW's args are pointer-sized on 64-bit Windows, and ctypes
+    # silently mis-marshals them without explicit argtypes declared).
+    # Switched to pywebview's own documented, cross-platform window.move()
+    # API instead -- confirmed in platforms/winforms.py to call the real
+    # Win32 SetWindowPos under the hood, so it's not meaningfully less
+    # "native" than the message-hijack trick, just far more traceable:
+    # track screen-space mouse deltas in JS, add them to the window's
+    # current position each move.
+    def start_drag(self, screen_x, screen_y):
+        self._last_drag_pos = (screen_x, screen_y)
+
+    def drag_move(self, screen_x, screen_y):
+        if self._last_drag_pos is None:
+            return
+        last_x, last_y = self._last_drag_pos
+        dx, dy = screen_x - last_x, screen_y - last_y
+        self._last_drag_pos = (screen_x, screen_y)
+        if dx == 0 and dy == 0:
+            return
+        loc = self._app_state.window.native.Location
+        new_x, new_y = loc.X + dx, loc.Y + dy
+        self._app_state.window.move(new_x, new_y)
+        print(f"[drag] moved by ({dx},{dy}) -> ({new_x},{new_y})")
+
+    def end_drag(self):
+        self._last_drag_pos = None
 
     def minimize(self):
         self._app_state.window.minimize()
@@ -196,8 +214,25 @@ def mic_loop(app_state, whisper_model, piper_voice):
     # those apart from the printed output. Remove once VAD is confirmed
     # working against real speech.
     debug_chunk_count = 0
+    # Separate wall-clock heartbeat (not chunk-count-based) so it still
+    # fires even if we're stuck in the muted/thinking/speaking branches
+    # below and never reach a single chunk -- if app_state.state ever gets
+    # stuck somewhere unexpected (a bug elsewhere leaving it in THINKING
+    # forever, say), this is what would reveal it instead of just silently
+    # printing nothing at all.
+    last_heartbeat = time.time()
+    got_since_heartbeat = 0
+    empty_since_heartbeat = 0
 
     while not app_state.shutdown.is_set():
+        if time.time() - last_heartbeat > 2.0:
+            print(f"[mic-heartbeat] state={app_state.state} muted={app_state.muted} "
+                  f"chunks_received={got_since_heartbeat} queue_timeouts={empty_since_heartbeat} "
+                  f"(queue_timeouts high + chunks_received 0 -> no audio arriving at all)")
+            last_heartbeat = time.time()
+            got_since_heartbeat = 0
+            empty_since_heartbeat = 0
+
         if app_state.muted:
             if not was_muted:
                 app_state.set_state(IDLE)
@@ -217,7 +252,9 @@ def mic_loop(app_state, whisper_model, piper_voice):
 
         try:
             chunk = audio_q.get(timeout=0.2)
+            got_since_heartbeat += 1
         except queue.Empty:
+            empty_since_heartbeat += 1
             continue
 
         prob = vad.process_chunk(chunk)

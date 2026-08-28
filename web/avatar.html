@@ -225,14 +225,34 @@ document.getElementById('minimize-btn').addEventListener('click', () => {
 });
 
 // ---- Window dragging: pywebview's Windows backend has no built-in
-// frameless-drag support, so mousedown on the drag strip calls into
-// Python to do the real Win32 drag (see assistant_app.py's
-// Api.start_drag). No-ops harmlessly in a standalone browser tab.
-document.getElementById('drag-region').addEventListener('mousedown', () => {
+// frameless-drag support. Two earlier attempts using the raw Win32
+// "fake a title-bar click" trick (WM_NCLBUTTONDOWN/HTCAPTION) didn't
+// actually move the window -- so instead of that, this tracks screen-
+// space mouse deltas here in JS and calls into Python
+// (assistant_app.py's Api.drag_move) to reposition the window via
+// pywebview's own documented window.move() API each step. No-ops
+// harmlessly in a standalone browser tab.
+let dragging = false;
+document.getElementById('drag-region').addEventListener('mousedown', (e) => {
+  if (e.button !== 0) return;
+  dragging = true;
   if (window.pywebview && window.pywebview.api && window.pywebview.api.start_drag) {
-    window.pywebview.api.start_drag();
+    window.pywebview.api.start_drag(e.screenX, e.screenY);
   } else {
     console.log('[standalone] start_drag (no-op outside pywebview)');
+  }
+});
+document.addEventListener('mousemove', (e) => {
+  if (!dragging || !(e.buttons & 1)) return;
+  if (window.pywebview && window.pywebview.api && window.pywebview.api.drag_move) {
+    window.pywebview.api.drag_move(e.screenX, e.screenY);
+  }
+});
+document.addEventListener('mouseup', () => {
+  if (!dragging) return;
+  dragging = false;
+  if (window.pywebview && window.pywebview.api && window.pywebview.api.end_drag) {
+    window.pywebview.api.end_drag();
   }
 });
 </script>

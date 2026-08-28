@@ -55,6 +55,7 @@ class AssistantState:
         self.state = IDLE
         self.muted = False
         self.ws_id = None
+        self.shutdown = threading.Event()
 
     def set_state(self, new_state):
         self.state = new_state
@@ -77,14 +78,26 @@ class Api:
     """Exposed to the page as window.pywebview.api -- avatar.html's mute
     button already calls window.pywebview.api.toggle_mute(next) directly
     and updates its own visual state locally; this just records the flag
-    so mic_loop knows to stop listening."""
+    so mic_loop knows to stop listening.
+
+    Stores app_state as `_app_state` (leading underscore), not `app_state`
+    -- pywebview's js_api introspection (util.py get_functions) recursively
+    walks every non-callable, non-underscore attribute of the exposed
+    object to discover bindable methods, with no cycle detection. app_state
+    holds a reference to the pywebview Window itself (`.window`), so a
+    plain `self.app_state` attribute here sent that walk straight into the
+    Window's native WinForms control and from there into .NET's
+    AccessibilityObject graph, which is self-referential (Rectangle.Empty
+    is itself a Rectangle with its own .Empty) -- infinite recursion,
+    confirmed live: it hung the whole process (RecursionError spam,
+    Whisper's background-thread load never completed) until this rename."""
 
     def __init__(self, app_state):
-        self.app_state = app_state
+        self._app_state = app_state
 
     def toggle_mute(self, is_muted):
         print(f"[mic] {'muted' if is_muted else 'unmuted'}")
-        self.app_state.set_muted(is_muted)
+        self._app_state.set_muted(is_muted)
 
 
 def process_utterance(app_state, whisper_model, piper_voice, audio):
@@ -138,7 +151,7 @@ def mic_loop(app_state, whisper_model, piper_voice):
     recording_chunks = []
     was_muted = False
 
-    while True:
+    while not app_state.shutdown.is_set():
         if app_state.muted:
             if not was_muted:
                 app_state.set_state(IDLE)
@@ -181,6 +194,10 @@ def mic_loop(app_state, whisper_model, piper_voice):
                 audio = audio[:-trim_samples]
             process_utterance(app_state, whisper_model, piper_voice, audio)
 
+    stream.stop()
+    stream.close()
+    print("Mic loop stopped (window closed).")
+
 
 def main():
     app_state = AssistantState()
@@ -195,9 +212,26 @@ def main():
         frameless=True,
         easy_drag=False,  # drag happens via #drag-region's -webkit-app-region:drag instead
         on_top=True,
-        transparent=True,
+        # transparent=True does NOT give real desktop-see-through on Windows
+        # in pywebview 6.2.1 -- confirmed by reading platforms/winforms.py:
+        # it sets the WebView2 control's own background to transparent, but
+        # never sets the enclosing Form's AllowTransparency/TransparencyKey,
+        # so the Form paints an opaque (effectively white) background behind
+        # it regardless. Long-standing, still-open upstream issue, not
+        # something to hand-patch here (r0x0r/pywebview #1611, #1200, #745).
+        # Verified live 2026-08-28 via an actual screenshot: transparent=True
+        # rendered a solid white square, not a floating orb. background_color
+        # is the part of the API that actually works -- use it deliberately
+        # instead of getting an unintended white box.
+        transparent=False,
+        background_color="#14141c",
     )
     app_state.window = window
+    # mic_loop only checks this flag between iterations (every ~200ms at
+    # most, via the queue.get timeout) -- good enough to stop the mic
+    # stream and let close_conversation() run in worker()'s finally block
+    # instead of leaving a non-daemon thread hanging after the window closes.
+    window.events.closing += app_state.shutdown.set
 
     def worker():
         # Piper's load+warmup overlaps with Whisper loading instead of

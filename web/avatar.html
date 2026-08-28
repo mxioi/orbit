@@ -6,7 +6,12 @@
 <style>
   html, body {
     margin: 0; padding: 0; overflow: hidden;
-    background: transparent;
+    /* Matches assistant_app.py's background_color -- real desktop-see-
+       through transparency isn't reliable on Windows/WebView2 as of
+       pywebview 6.2.1 (confirmed live, see assistant_app.py comment), so
+       this renders as an intentional dark floating panel instead of an
+       accidental white box. */
+    background: #14141c;
     width: 100%; height: 100%;
   }
   #drag-region {

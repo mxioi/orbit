@@ -5,15 +5,25 @@ for its "onnx" extra (they're base deps, not optional) -- avoided that by
 extracting just the .onnx model file and driving it directly through the
 onnxruntime we already depend on for Whisper/Piper.
 
-Model contract (confirmed via `sess.get_inputs()/get_outputs()` on the
-actual file, not just docs): stateful, processes fixed 512-sample chunks
-at 16kHz, carries a [2, 1, 128] hidden state between calls.
+Model contract (confirmed against the actual file's I/O tensors AND the
+official reference implementation, snakers4/silero-vad's utils_vad.py --
+sess.get_inputs()/outputs() alone weren't enough, see below): stateful,
+processes 512-sample chunks at 16kHz, carries a [2, 1, 128] hidden state
+between calls, PLUS a 64-sample "context" window (the tail of the
+previous chunk) that must be prepended to each new chunk before it's fed
+to the model -- so the real "input" tensor is 576 samples (64 context +
+512 new), not a bare 512. Missing this context-priming was a real,
+confirmed bug: without it, the model's output stayed flatlined near
+0.001 regardless of actual audio content (verified live against real
+speech, not just synthetic TTS) -- the model was effectively seeing a
+truncated/misaligned window on every single call.
 """
 import numpy as np
 import onnxruntime as ort
 
 SAMPLE_RATE = 16000
 CHUNK_SAMPLES = 512  # ~32ms at 16kHz -- Silero's required chunk size
+CONTEXT_SAMPLES = 64  # tail of the previous chunk, prepended to each new one at 16kHz
 
 
 class SileroVAD:
@@ -23,19 +33,23 @@ class SileroVAD:
 
     def reset(self):
         self._state = np.zeros((2, 1, 128), dtype=np.float32)
+        self._context = np.zeros(CONTEXT_SAMPLES, dtype=np.float32)
 
     def process_chunk(self, chunk: np.ndarray) -> float:
         """chunk: float32 array of exactly CHUNK_SAMPLES samples in [-1, 1].
-        Returns speech probability 0..1. Carries hidden state internally --
-        call reset() when starting a fresh listening session/after a long gap."""
+        Returns speech probability 0..1. Carries hidden state AND context
+        internally -- call reset() when starting a fresh listening
+        session/after a long gap."""
         if len(chunk) != CHUNK_SAMPLES:
             raise ValueError(f"expected {CHUNK_SAMPLES} samples, got {len(chunk)}")
+        x = np.concatenate([self._context, chunk])
         inputs = {
-            "input": chunk.reshape(1, -1),
+            "input": x.reshape(1, -1),
             "state": self._state,
             "sr": np.array(SAMPLE_RATE, dtype=np.int64),
         }
         prob, self._state = self.sess.run(["output", "stateN"], inputs)
+        self._context = x[-CONTEXT_SAMPLES:]
         return float(prob[0][0])
 
 

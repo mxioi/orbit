@@ -101,25 +101,34 @@ class Api:
 
 
 def process_utterance(app_state, whisper_model, piper_voice, audio):
-    app_state.set_state(THINKING)
-    text = stt.transcribe(whisper_model, audio)
-    print(f"You said: {text!r}")
-    if not text.strip():
+    # mic_loop calls this directly on its own thread with no surrounding
+    # try/except -- an uncaught exception here (a Turnstone network
+    # hiccup, a transient Whisper/Piper error) would otherwise kill that
+    # background thread silently, leaving the avatar stuck showing
+    # THINKING/SPEAKING forever with no crash to even notice. Catch
+    # broadly and always fall back to LISTENING so one bad turn doesn't
+    # require restarting the app.
+    try:
+        app_state.set_state(THINKING)
+        text = stt.transcribe(whisper_model, audio)
+        print(f"You said: {text!r}")
+        if not text.strip():
+            return
+
+        if app_state.ws_id is None:
+            app_state.ws_id, response = tc.create_conversation(model=tc.TURNSTONE_MODEL, first_message=text)
+            print(f"[turnstone] ws_id={app_state.ws_id}")
+        else:
+            response = tc.ask(app_state.ws_id, text)
+        print(f"Turnstone: {response!r}")
+
+        if response.strip():
+            app_state.set_state(SPEAKING)
+            tts.speak(piper_voice, response, on_amplitude=app_state.set_amplitude)
+    except Exception as e:
+        print(f"[process_utterance] turn failed, recovering to LISTENING: {e!r}")
+    finally:
         app_state.set_state(LISTENING)
-        return
-
-    if app_state.ws_id is None:
-        app_state.ws_id, response = tc.create_conversation(model=tc.TURNSTONE_MODEL, first_message=text)
-        print(f"[turnstone] ws_id={app_state.ws_id}")
-    else:
-        response = tc.ask(app_state.ws_id, text)
-    print(f"Turnstone: {response!r}")
-
-    if response.strip():
-        app_state.set_state(SPEAKING)
-        tts.speak(piper_voice, response, on_amplitude=app_state.set_amplitude)
-
-    app_state.set_state(LISTENING)
 
 
 def mic_loop(app_state, whisper_model, piper_voice):

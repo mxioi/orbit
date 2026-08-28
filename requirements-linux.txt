@@ -1,0 +1,33 @@
+# Linux equivalent of requirements.txt. Same package versions confirmed to
+# resolve identically on Linux (verified live via WSL2/Ubuntu 24.04, see
+# install-linux.sh's header comment for the full feasibility investigation).
+#
+# What's DIFFERENT from requirements.txt, and why:
+# - pywebview needs PyGObject + pycairo here too -- its Linux backend is
+#   GTK + WebKit2GTK, which PyGObject binds to. These aren't optional the
+#   way the CUDA packages are; without them pywebview has no GUI backend
+#   to use at all on Linux. install-linux.sh installs the SYSTEM packages
+#   (libgirepository-2.0-dev, libcairo2-dev, gir1.2-webkit2-4.1) these pip
+#   packages need to build/run against -- pip alone can't provide those.
+# - No nvidia-*-cu12 block. CUDA-via-WSL2 GPU passthrough is untested by
+#   this project as of the initial Linux-support pass -- stt.py's
+#   load_whisper() already tries cuda then falls back to cpu regardless,
+#   so this isn't a hard requirement either way. Add the same nvidia-*-cu12
+#   lines from requirements.txt here if/when GPU accel on Linux is
+#   actually verified working; Linux's wheels use standard RPATH-based
+#   linking, not the Windows DLL-search-order workaround stt.py has to do.
+# - keyboard is still listed (voice_test.py's push-to-talk CLI fallback
+#   works on Linux too), but its global-hotkey hook needs either root or
+#   membership in the `input` group on Linux -- not needed at all for
+#   assistant_app.py, which is VAD-driven, not push-to-talk.
+
+numpy==2.5.2
+sounddevice==0.5.6
+keyboard==0.13.5          # push-to-talk in voice_test.py only -- needs root or the `input` group on Linux
+faster-whisper==1.2.1
+ctranslate2==4.8.1        # faster-whisper's backend -- pinned together, version-sensitive
+piper-tts==1.7.0
+onnxruntime==1.29.0       # CPU only -- used by both Piper and vad.py's SileroVAD
+pywebview==6.2.1
+PyGObject==3.58.0         # pywebview's Linux GUI backend (GTK bindings) -- needs libgirepository-2.0-dev to build
+pycairo==1.29.1           # PyGObject's own dependency

@@ -22,6 +22,20 @@ from concurrent.futures import ThreadPoolExecutor
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
+IS_WINDOWS = sys.platform == "win32"
+
+if not IS_WINDOWS:
+    # Must be set before `import webview` -- pywebview's GTK backend
+    # defaults to Wayland when WSLg/a Wayland session sets WAYLAND_DISPLAY,
+    # which showed inconsistent/premature-exit behavior in testing (a
+    # window's GTK main loop returning almost immediately instead of
+    # actually running). Forcing X11 (WSLg also provides an X11 socket)
+    # was confirmed live to fix it -- the same window then ran its full
+    # expected duration and fired real WebKit load events. Harmless outside
+    # WSLg too, since any Linux desktop with an X server (or Xwayland,
+    # which is standard) still has X11 available.
+    os.environ.setdefault("GDK_BACKEND", "x11")
+
 import numpy as np
 import sounddevice as sd
 import webview
@@ -210,11 +224,22 @@ class Api:
     # "native" than the message-hijack trick, just far more traceable:
     # track screen-space mouse deltas in JS, add them to the window's
     # current position each move.
+    #
+    # Linux's GTK backend (platforms/gtk.py) DOES implement easy_drag
+    # properly on its own -- confirmed by reading it -- so none of this
+    # manual dragging is needed there at all. main() passes
+    # easy_drag=True on Linux instead, and these methods become no-ops:
+    # avatar.html's JS still calls them (it doesn't know which platform
+    # it's running under), they just have nothing to do. window.native
+    # is a GTK widget on Linux, not a WinForms Form -- it has no
+    # `.Location`, so this code must not run there regardless.
     def start_drag(self, screen_x, screen_y):
+        if not IS_WINDOWS:
+            return
         self._last_drag_pos = (screen_x, screen_y)
 
     def drag_move(self, screen_x, screen_y):
-        if self._last_drag_pos is None:
+        if not IS_WINDOWS or self._last_drag_pos is None:
             return
         last_x, last_y = self._last_drag_pos
         dx, dy = screen_x - last_x, screen_y - last_y
@@ -485,7 +510,12 @@ def main():
         width=380,
         height=380,
         frameless=True,
-        easy_drag=False,  # drag happens via #drag-region's -webkit-app-region:drag instead
+        # Windows: False -- its backend has no built-in drag support at
+        # all (see Api.drag_move's comment), so dragging is hand-rolled
+        # via window.move() instead. Linux: True -- confirmed by reading
+        # platforms/gtk.py that its easy_drag is a real, working
+        # implementation; no need to duplicate it.
+        easy_drag=not IS_WINDOWS,
         on_top=True,
         # transparent=True does NOT give real desktop-see-through on Windows
         # in pywebview 6.2.1 -- confirmed by reading platforms/winforms.py:
@@ -498,6 +528,15 @@ def main():
         # rendered a solid white square, not a floating orb. background_color
         # is the part of the API that actually works -- use it deliberately
         # instead of getting an unintended white box.
+        #
+        # Kept transparent=False on Linux too, not because it's confirmed
+        # broken there (GTK's compositor path is genuinely different, and
+        # WSLg's window rendering couldn't be visually verified from this
+        # dev environment at all -- a capture limitation, not evidence
+        # either way), but because background_color is already a known-
+        # good choice on both platforms and there was no way to safely
+        # verify transparency working on Linux before shipping this.
+        # Worth revisiting once someone can actually look at it running.
         transparent=False,
         background_color="#14141c",
     )

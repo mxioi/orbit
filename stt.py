@@ -1,19 +1,27 @@
 """Speech-to-text: faster-whisper, CUDA if available, CPU fallback.
 
-Importing this module sets up the CUDA/cuDNN DLL PATH before importing
-faster_whisper -- must happen before that import, not just before use,
-since CTranslate2's internal LoadLibrary calls only respect PATH, not
-os.add_dll_directory().
+On Windows, importing this module sets up the CUDA/cuDNN DLL PATH before
+importing faster_whisper -- must happen before that import, not just
+before use, since CTranslate2's internal LoadLibrary calls only respect
+PATH, not os.add_dll_directory(). Linux's nvidia-*-cu12 wheels don't need
+this: they use standard RPATH-based dynamic linking, not the Windows DLL
+search order that made the manual PATH edit necessary in the first place.
+CUDA-via-WSL2 GPU passthrough is untested by this project as of the
+initial Linux-support pass -- load_whisper() below already tries cuda
+then falls back to cpu either way, so an untested/absent GPU path here
+just means it quietly runs on CPU, not a hard failure.
 """
 import os
+import sys
 import time
 
-os.environ["PATH"] = (
-    r"C:\Program Files\Python314\Lib\site-packages\nvidia\cublas\bin;"
-    r"C:\Program Files\Python314\Lib\site-packages\nvidia\cudnn\bin;"
-    r"C:\Program Files\Python314\Lib\site-packages\nvidia\cuda_nvrtc\bin;"
-    r"C:\Program Files\Python314\Lib\site-packages\nvidia\cuda_runtime\bin;"
-) + os.environ["PATH"]
+if sys.platform == "win32":
+    os.environ["PATH"] = (
+        r"C:\Program Files\Python314\Lib\site-packages\nvidia\cublas\bin;"
+        r"C:\Program Files\Python314\Lib\site-packages\nvidia\cudnn\bin;"
+        r"C:\Program Files\Python314\Lib\site-packages\nvidia\cuda_nvrtc\bin;"
+        r"C:\Program Files\Python314\Lib\site-packages\nvidia\cuda_runtime\bin;"
+    ) + os.environ["PATH"]
 
 import numpy as np
 from faster_whisper import WhisperModel

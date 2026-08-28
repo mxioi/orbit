@@ -17,24 +17,24 @@
   #drag-region {
     position: fixed; top: 0; left: 0; right: 0; height: 28px;
     -webkit-app-region: drag;
-    display: flex; align-items: center; justify-content: flex-end;
-    padding: 0 6px; box-sizing: border-box;
     z-index: 10;
   }
   #mute-btn {
     -webkit-app-region: no-drag;
-    width: 20px; height: 20px; border-radius: 50%;
+    position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
+    width: 52px; height: 52px; border-radius: 50%;
     border: none; cursor: pointer;
     background: rgba(255,255,255,0.15);
-    color: #fff; font-size: 11px;
+    color: #fff; font-size: 24px;
     display: flex; align-items: center; justify-content: center;
     transition: background 0.15s ease;
+    z-index: 10;
   }
   #mute-btn:hover { background: rgba(255,255,255,0.3); }
   #mute-btn.muted { background: rgba(220,60,60,0.7); }
 
   #status-label {
-    position: fixed; bottom: 8px; left: 0; right: 0;
+    position: fixed; bottom: 74px; left: 0; right: 0;
     text-align: center; font: 11px sans-serif; color: rgba(255,255,255,0.55);
     letter-spacing: 0.04em; text-transform: uppercase;
     pointer-events: none;
@@ -44,9 +44,8 @@
 </style>
 </head>
 <body>
-  <div id="drag-region">
-    <button id="mute-btn" title="Mute">&#128266;</button>
-  </div>
+  <div id="drag-region"></div>
+  <button id="mute-btn" title="Mute">&#128266;</button>
   <canvas id="orb"></canvas>
   <div id="status-label">idle</div>
 

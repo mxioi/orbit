@@ -36,6 +36,17 @@
     z-index: 11;
   }
   #minimize-btn:hover { background: rgba(255,255,255,0.3); }
+  #sensitivity-btn {
+    position: fixed; top: 4px; left: 6px;
+    width: 20px; height: 20px; border-radius: 50%;
+    border: none; cursor: pointer;
+    background: rgba(255,255,255,0.15);
+    color: #fff; font-size: 11px; font-weight: 600; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+    transition: background 0.15s ease;
+    z-index: 11;
+  }
+  #sensitivity-btn:hover { background: rgba(255,255,255,0.3); }
   #mute-btn {
     position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
     width: 52px; height: 52px; border-radius: 50%;
@@ -61,6 +72,7 @@
 </head>
 <body>
   <div id="drag-region"></div>
+  <button id="sensitivity-btn" title="Mic sensitivity">M</button>
   <button id="minimize-btn" title="Minimize">&#8212;</button>
   <button id="mute-btn" title="Mute">&#128266;</button>
   <canvas id="orb"></canvas>
@@ -199,9 +211,30 @@ function setMuted(isMuted) {
   document.getElementById('status-label').textContent = isMuted ? 'muted' : state;
 }
 
+// Briefly overrides status-label to show the new sensitivity level, then
+// reverts to the normal state text -- same label element setState() uses,
+// so the two need to not fight: the timeout always restores whatever
+// setState()'s own tracked `state`/`muted` currently are, not a stale
+// value from whenever the sensitivity change happened.
+let sensitivityLabelTimeout = null;
+function setSensitivityLabel(level) {
+  const btn = document.getElementById('sensitivity-btn');
+  btn.textContent = { low: 'L', medium: 'M', high: 'H' }[level] || '?';
+  btn.title = `Mic sensitivity: ${level} (click to change)`;
+
+  const statusEl = document.getElementById('status-label');
+  statusEl.textContent = `sensitivity: ${level}`;
+  if (sensitivityLabelTimeout) clearTimeout(sensitivityLabelTimeout);
+  sensitivityLabelTimeout = setTimeout(() => {
+    statusEl.textContent = muted ? 'muted' : state;
+    sensitivityLabelTimeout = null;
+  }, 1500);
+}
+
 window.setState = setState;
 window.setAmplitude = setAmplitude;
 window.setMuted = setMuted;
+window.setSensitivityLabel = setSensitivityLabel;
 
 // ---- Mute button: calls back into Python if the pywebview bridge is
 // present; falls back to local-only toggle for standalone browser testing.
@@ -213,6 +246,18 @@ document.getElementById('mute-btn').addEventListener('click', () => {
     console.log('[standalone] toggle_mute ->', next);
   }
   setMuted(next);
+});
+
+// ---- Sensitivity button: cycles low -> medium -> high -> low. Python
+// owns the actual value and pushes the new label back via
+// setSensitivityLabel() (both here and at startup) -- single source of
+// truth, this doesn't guess/set it locally.
+document.getElementById('sensitivity-btn').addEventListener('click', () => {
+  if (window.pywebview && window.pywebview.api && window.pywebview.api.cycle_sensitivity) {
+    window.pywebview.api.cycle_sensitivity();
+  } else {
+    console.log('[standalone] cycle_sensitivity (no-op outside pywebview)');
+  }
 });
 
 // ---- Minimize button.

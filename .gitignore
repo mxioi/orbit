@@ -14,3 +14,6 @@ cudnn9_download/
 # Local-only secrets
 .turnstone_token
 *.token
+
+# Per-machine user preference (VAD sensitivity etc.), not project config
+voice_config.json

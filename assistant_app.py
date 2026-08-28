@@ -11,6 +11,7 @@ collides with an in-flight server request; it just cuts local playback and
 starts an independent new turn. See mic_loop's audio callback and the
 event == "start" handling below for where this is wired in.
 """
+import json
 import os
 import queue
 import sys
@@ -33,6 +34,7 @@ from vad import SAMPLE_RATE, CHUNK_SAMPLES, SileroVAD, UtteranceDetector
 _HERE = os.path.dirname(os.path.abspath(__file__))
 AVATAR_HTML = os.path.join(_HERE, "web", "avatar.html")
 VAD_MODEL_PATH = os.path.join(_HERE, "vad_model", "silero_vad.onnx")
+CONFIG_PATH = os.path.join(_HERE, "voice_config.json")
 
 # Mirror web/avatar.html's PALETTE keys exactly -- these strings are passed
 # straight through to setState() on the JS side.
@@ -43,6 +45,44 @@ IDLE, LISTENING, RECORDING, THINKING, SPEAKING = "idle", "listening", "recording
 # near-silence is sitting at the tail of the buffer when "end" fires. Trim
 # most of it back off before handing audio to Whisper.
 TRAIL_TRIM_S = 0.5
+
+# VAD sensitivity: user-adjustable since the right threshold genuinely
+# depends on the mic and room (louder/closer mic + quiet room can afford
+# "high" without picking up noise; a quiet/far mic in a noisy room needs
+# "low" to avoid false triggers). Cycled via the avatar's sensitivity
+# button, persisted across restarts in voice_config.json (gitignored --
+# a per-machine preference, not project config).
+VAD_SENSITIVITY_LEVELS = ["low", "medium", "high"]
+VAD_THRESHOLDS = {"low": 0.7, "medium": 0.5, "high": 0.3}
+DEFAULT_VAD_SENSITIVITY = "medium"
+
+# Barge-in candidate confirmation: once VAD flags speech while SPEAKING,
+# TTS is NOT cut immediately -- that's what let ordinary background noise
+# (or, worse, the assistant's own voice bleeding back into the mic) cut
+# itself off. Instead, up to this much candidate audio is captured first
+# and run through Whisper; only a real transcribed word confirms a genuine
+# barge-in and actually stops TTS. If nothing intelligible comes back,
+# it's treated as noise and TTS just keeps playing, uninterrupted.
+BARGE_IN_CONFIRM_S = 1.0
+
+
+def load_config():
+    try:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        cfg = {}
+    if cfg.get("vad_sensitivity") not in VAD_SENSITIVITY_LEVELS:
+        cfg["vad_sensitivity"] = DEFAULT_VAD_SENSITIVITY
+    return cfg
+
+
+def save_config(cfg):
+    try:
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(cfg, f)
+    except OSError as e:
+        print(f"[config] failed to save {CONFIG_PATH}: {e!r}")
 
 
 class AssistantState:
@@ -61,6 +101,12 @@ class AssistantState:
         self.muted = False
         self.ws_id = None
         self.shutdown = threading.Event()
+        self.config = load_config()
+        # mic_loop reads this each iteration (detector.threshold = ...) --
+        # a plain attribute update here takes effect on the very next VAD
+        # check, no restart or detector-rebuild needed.
+        self.vad_sensitivity = self.config["vad_sensitivity"]
+        self.vad_threshold = VAD_THRESHOLDS[self.vad_sensitivity]
         # Current TTS playback thread + its OWN stop Event, if any is
         # active. A fresh Event() is created per turn rather than reusing/
         # clearing one shared instance -- reusing one caused a real bug:
@@ -72,6 +118,24 @@ class AssistantState:
         # can never reference the same flag.
         self._tts_thread = None
         self._tts_stop_event = None
+
+    def cycle_sensitivity(self):
+        """Advances to the next VAD sensitivity level, persists it, and
+        pushes the new label to the avatar. Returns the new level."""
+        idx = VAD_SENSITIVITY_LEVELS.index(self.vad_sensitivity)
+        self.vad_sensitivity = VAD_SENSITIVITY_LEVELS[(idx + 1) % len(VAD_SENSITIVITY_LEVELS)]
+        self.vad_threshold = VAD_THRESHOLDS[self.vad_sensitivity]
+        self.config["vad_sensitivity"] = self.vad_sensitivity
+        save_config(self.config)
+        print(f"[vad] sensitivity -> {self.vad_sensitivity} (threshold={self.vad_threshold})")
+        self._push_sensitivity_label()
+        return self.vad_sensitivity
+
+    def _push_sensitivity_label(self):
+        try:
+            self.window.evaluate_js(f"setSensitivityLabel({self.vad_sensitivity!r})")
+        except Exception as e:
+            print(f"[avatar] setSensitivityLabel failed: {e}")
 
     def stop_tts_if_speaking(self):
         """Signal the CURRENT tts thread (if any) to stop and block until
@@ -166,8 +230,11 @@ class Api:
     def minimize(self):
         self._app_state.window.minimize()
 
+    def cycle_sensitivity(self):
+        return self._app_state.cycle_sensitivity()
 
-def process_utterance(app_state, whisper_model, piper_voice, audio):
+
+def process_utterance(app_state, whisper_model, piper_voice, audio, known_text=None):
     # mic_loop calls this directly on its own thread with no surrounding
     # try/except -- an uncaught exception here (a Turnstone network
     # hiccup, a transient Whisper/Piper error) would otherwise kill that
@@ -175,9 +242,14 @@ def process_utterance(app_state, whisper_model, piper_voice, audio):
     # THINKING/SPEAKING forever with no crash to even notice. Catch
     # broadly and always fall back to LISTENING so one bad turn doesn't
     # require restarting the app.
+    #
+    # known_text: a confirmed barge-in already ran this exact audio
+    # through Whisper once to decide whether it was real speech (see
+    # mic_loop's BARGE_IN_CONFIRM_S handling) -- pass that result through
+    # instead of transcribing the same audio a second time.
     try:
         app_state.set_state(THINKING)
-        text = stt.transcribe(whisper_model, audio)
+        text = known_text if known_text is not None else stt.transcribe(whisper_model, audio)
         print(f"You said: {text!r}")
         if not text.strip():
             app_state.set_state(LISTENING)
@@ -268,6 +340,8 @@ def mic_loop(app_state, whisper_model, piper_voice):
     preroll = deque(maxlen=detector.speech_frames_to_start + 2)
     recording_chunks = []
     was_muted = False
+    barge_in_pending = False
+    barge_in_started_at = None
 
     # Temporary diagnostics: print mic level + VAD probability a few times
     # a second so we can tell, from a live run, whether audio is actually
@@ -302,6 +376,7 @@ def mic_loop(app_state, whisper_model, piper_voice):
                 detector = UtteranceDetector()  # drop any half-finished utterance
                 recording_chunks = []
                 preroll.clear()
+                barge_in_pending = False
                 was_muted = True
             time.sleep(0.05)
             continue
@@ -320,6 +395,10 @@ def mic_loop(app_state, whisper_model, piper_voice):
             empty_since_heartbeat += 1
             continue
 
+        # Cheap attribute update, takes effect on this very check -- no
+        # detector rebuild needed for a live sensitivity change.
+        detector.threshold = app_state.vad_threshold
+
         prob = vad.process_chunk(chunk)
         event = detector.update(prob)
 
@@ -334,27 +413,61 @@ def mic_loop(app_state, whisper_model, piper_voice):
             preroll.append(chunk)
 
         if event == "start":
-            if app_state.state == SPEAKING:
-                # Barge-in: cut TTS playback and BLOCK until it's actually
-                # stopped (not just signaled) before continuing -- see
-                # AssistantState.stop_tts_if_speaking's docstring for why
-                # this guarantees no overlap instead of just hoping for
-                # good timing. Everything else below is identical to a
-                # normal utterance start -- the interrupting speech just
-                # becomes the next turn once its own "end" fires further
-                # down.
-                print("[mic] barge-in detected, interrupting TTS")
-                app_state.stop_tts_if_speaking()
             recording_chunks = list(preroll) + recording_chunks
             preroll.clear()
-            app_state.set_state(RECORDING)
+            if app_state.state == SPEAKING:
+                # Barge-in CANDIDATE -- do NOT cut TTS yet. Background
+                # noise or the assistant's own voice bleeding back into
+                # the mic can trigger VAD too; committing to a cut here
+                # would make either one a false interrupt. Keep TTS
+                # playing and keep recording -- the candidate gets
+                # confirmed against a real Whisper transcript below
+                # (either right here once it ends, or after
+                # BARGE_IN_CONFIRM_S if it's a longer utterance).
+                barge_in_pending = True
+                barge_in_started_at = time.time()
+            else:
+                app_state.set_state(RECORDING)
         elif event == "end":
             audio = np.concatenate(recording_chunks) if recording_chunks else np.zeros(0, dtype="float32")
             recording_chunks = []
             trim_samples = int(TRAIL_TRIM_S * SAMPLE_RATE)
             if len(audio) > trim_samples:
                 audio = audio[:-trim_samples]
-            process_utterance(app_state, whisper_model, piper_voice, audio)
+            if barge_in_pending:
+                barge_in_pending = False
+                text = stt.transcribe(whisper_model, audio) if len(audio) else ""
+                if text.strip():
+                    print(f"[mic] barge-in confirmed: {text!r}")
+                    app_state.stop_tts_if_speaking()
+                    app_state.set_state(RECORDING)
+                    process_utterance(app_state, whisper_model, piper_voice, audio, known_text=text)
+                else:
+                    print("[mic] barge-in candidate had no recognizable words -- ignoring, TTS continues")
+                    detector = UtteranceDetector()  # this one thinks it's mid-utterance; needs a clean reset
+            else:
+                process_utterance(app_state, whisper_model, piper_voice, audio)
+
+        # Barge-in candidate ran long enough to hit the confirmation cap
+        # without a natural "end" yet (still talking) -- decide now using
+        # whatever's captured so far, so a genuine interrupt on a long
+        # sentence doesn't sit there uncut for its whole duration. If
+        # confirmed, recording just continues normally below (detector.
+        # in_speech is already True) and the eventual real "end" processes
+        # the FULL utterance fresh, including whatever's said afterward.
+        if barge_in_pending and time.time() - barge_in_started_at >= BARGE_IN_CONFIRM_S:
+            barge_in_pending = False
+            partial_audio = np.concatenate(recording_chunks) if recording_chunks else np.zeros(0, dtype="float32")
+            text = stt.transcribe(whisper_model, partial_audio) if len(partial_audio) else ""
+            if text.strip():
+                print(f"[mic] barge-in confirmed (still talking): {text!r}")
+                app_state.stop_tts_if_speaking()
+                app_state.set_state(RECORDING)
+            else:
+                print("[mic] barge-in candidate had no recognizable words -- ignoring, TTS continues")
+                recording_chunks = []
+                preroll.clear()
+                detector = UtteranceDetector()
 
     stream.stop()
     stream.close()
@@ -403,6 +516,7 @@ def main():
         piper_voice = piper_future.result()
 
         app_state.set_state(LISTENING)
+        app_state._push_sensitivity_label()
         try:
             mic_loop(app_state, whisper_model, piper_voice)
         finally:

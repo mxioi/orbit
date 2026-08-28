@@ -159,7 +159,12 @@ def ask(ws_id, message, timeout_s=120, poll_interval=0.5, on_poll=None):
         # the last (not first) new non-empty assistant row, since a turn
         # can emit several assistant rows in sequence and only the last
         # one is guaranteed to be the final answer.
-        if detail.get("live", {}).get("state") != "idle":
+        # `detail.get("live", {})` isn't enough on its own -- the default
+        # only applies when the key is MISSING, and "live" can be present
+        # but explicitly None (confirmed live: AttributeError on a fresh
+        # workstream's very first poll, before the server has attached any
+        # live-state object yet). `or {}` also covers the None case.
+        if (detail.get("live") or {}).get("state") != "idle":
             continue
 
         new_assistant_msgs = [

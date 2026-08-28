@@ -15,12 +15,28 @@
     width: 100%; height: 100%;
   }
   #drag-region {
+    /* -webkit-app-region: drag is an Electron/Chromium-app convention --
+       pywebview's Windows backend (WebView2 + WinForms) doesn't implement
+       it at all, confirmed by reading its source. Dragging is instead
+       driven explicitly by the mousedown listener below, which calls into
+       Python's Api.start_drag() (assistant_app.py) to do the real Win32
+       drag. This element just marks/sizes the draggable strip. */
     position: fixed; top: 0; left: 0; right: 0; height: 28px;
-    -webkit-app-region: drag;
     z-index: 10;
+    cursor: move;
   }
+  #minimize-btn {
+    position: fixed; top: 4px; right: 6px;
+    width: 20px; height: 20px; border-radius: 50%;
+    border: none; cursor: pointer;
+    background: rgba(255,255,255,0.15);
+    color: #fff; font-size: 13px; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+    transition: background 0.15s ease;
+    z-index: 11;
+  }
+  #minimize-btn:hover { background: rgba(255,255,255,0.3); }
   #mute-btn {
-    -webkit-app-region: no-drag;
     position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
     width: 52px; height: 52px; border-radius: 50%;
     border: none; cursor: pointer;
@@ -45,6 +61,7 @@
 </head>
 <body>
   <div id="drag-region"></div>
+  <button id="minimize-btn" title="Minimize">&#8212;</button>
   <button id="mute-btn" title="Mute">&#128266;</button>
   <canvas id="orb"></canvas>
   <div id="status-label">idle</div>
@@ -196,6 +213,27 @@ document.getElementById('mute-btn').addEventListener('click', () => {
     console.log('[standalone] toggle_mute ->', next);
   }
   setMuted(next);
+});
+
+// ---- Minimize button.
+document.getElementById('minimize-btn').addEventListener('click', () => {
+  if (window.pywebview && window.pywebview.api && window.pywebview.api.minimize) {
+    window.pywebview.api.minimize();
+  } else {
+    console.log('[standalone] minimize (no-op outside pywebview)');
+  }
+});
+
+// ---- Window dragging: pywebview's Windows backend has no built-in
+// frameless-drag support, so mousedown on the drag strip calls into
+// Python to do the real Win32 drag (see assistant_app.py's
+// Api.start_drag). No-ops harmlessly in a standalone browser tab.
+document.getElementById('drag-region').addEventListener('mousedown', () => {
+  if (window.pywebview && window.pywebview.api && window.pywebview.api.start_drag) {
+    window.pywebview.api.start_drag();
+  } else {
+    console.log('[standalone] start_drag (no-op outside pywebview)');
+  }
 });
 </script>
 </body>

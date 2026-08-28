@@ -8,6 +8,7 @@ audio is simply discarded, same as push-to-talk always effectively did by
 not listening between turns. That's the next phase, once this one is
 confirmed solid.
 """
+import ctypes
 import os
 import queue
 import sys
@@ -99,6 +100,28 @@ class Api:
         print(f"[mic] {'muted' if is_muted else 'unmuted'}")
         self._app_state.set_muted(is_muted)
 
+    def start_drag(self):
+        """Called from avatar.html on mousedown in #drag-region. pywebview
+        6.2.1's Windows backend (edgechromium.py + winforms.py) has NO
+        built-in frameless-window dragging at all -- confirmed by reading
+        both files, neither references easy_drag or any drag handling;
+        only the legacy mshtml.py, plus qt.py/gtk.py/cocoa.py on other
+        platforms, implement it. This is the standard Win32 workaround:
+        releasing mouse capture and telling Windows the click landed on
+        the (nonexistent) title bar makes the OS itself drive the whole
+        drag natively -- smooth, correct, and exactly what mshtml.py's own
+        easy_drag does under the hood (WebBrowserEx.ReleaseCapture() +
+        WM_NCLBUTTONDOWN/HTCAPTION), just reimplemented here since
+        edgechromium.py doesn't wire that up for WebView2."""
+        hwnd = self._app_state.window.native.Handle.ToInt32()
+        WM_NCLBUTTONDOWN = 0x00A1
+        HTCAPTION = 2
+        ctypes.windll.user32.ReleaseCapture()
+        ctypes.windll.user32.SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0)
+
+    def minimize(self):
+        self._app_state.window.minimize()
+
 
 def process_utterance(app_state, whisper_model, piper_voice, audio):
     # mic_loop calls this directly on its own thread with no surrounding
@@ -151,6 +174,11 @@ def mic_loop(app_state, whisper_model, piper_voice):
         blocksize=CHUNK_SAMPLES, callback=callback,
     )
     stream.start()
+    try:
+        dev = sd.query_devices(stream.device, "input")
+        print(f"[mic] input device: {dev['name']!r} (default samplerate {dev['default_samplerate']})")
+    except Exception as e:
+        print(f"[mic] could not query input device: {e!r}")
     print("Listening (VAD-driven -- just start talking, no key to hold)...")
 
     # Rolling pre-roll so the few chunks Silero needs to *confirm* speech
@@ -159,6 +187,15 @@ def mic_loop(app_state, whisper_model, piper_voice):
     preroll = deque(maxlen=detector.speech_frames_to_start + 2)
     recording_chunks = []
     was_muted = False
+
+    # Temporary diagnostics: print mic level + VAD probability a few times
+    # a second so we can tell, from a live run, whether audio is actually
+    # arriving (RMS near 0 -> wrong/silent input device) or audio looks
+    # fine but VAD never crosses threshold (VAD/threshold issue) --
+    # can't hear the mic from here, so this is the fastest way to tell
+    # those apart from the printed output. Remove once VAD is confirmed
+    # working against real speech.
+    debug_chunk_count = 0
 
     while not app_state.shutdown.is_set():
         if app_state.muted:
@@ -185,6 +222,11 @@ def mic_loop(app_state, whisper_model, piper_voice):
 
         prob = vad.process_chunk(chunk)
         event = detector.update(prob)
+
+        debug_chunk_count += 1
+        if debug_chunk_count % 15 == 0:  # ~0.5s of audio at 512 samples/32ms per chunk
+            rms = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
+            print(f"[mic-debug] rms={rms:.4f} vad_prob={prob:.3f} in_speech={detector.in_speech}")
 
         if detector.in_speech:
             recording_chunks.append(chunk)

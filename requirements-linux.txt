@@ -31,3 +31,21 @@ onnxruntime==1.29.0       # CPU only -- used by both Piper and vad.py's SileroVA
 pywebview==6.2.1
 PyGObject==3.58.0         # pywebview's Linux GUI backend (GTK bindings) -- needs libgirepository-2.0-dev to build
 pycairo==1.29.1           # PyGObject's own dependency
+
+# --- Optional: GPU-accelerated STT on AMD/Intel GPUs (NVIDIA already gets
+# GPU accel above, via CUDA/faster-whisper) -- NOT installed by this file or
+# install-linux.sh, since it needs a from-source build, not a plain pip
+# install. CTranslate2 (faster-whisper's engine) only supports NVIDIA in its
+# prebuilt wheels -- confirmed via its own hardware-support docs -- so AMD/
+# Intel GPUs get zero acceleration through the packages above, full stop.
+# whisper.cpp's Vulkan backend is vendor-neutral and stt.py already knows
+# how to use it if present (see stt.py's module docstring + the fallback
+# order in load_whisper()) -- verified live against a real Intel Arc Pro
+# B70: genuine GPU engagement, correct transcription, ~1s for an 11s clip.
+#
+# To enable, after the system packages above are installed, also install:
+#   sudo apt-get install -y build-essential cmake libvulkan-dev glslc \
+#       spirv-headers spirv-tools glslang-dev glslang-tools
+#   GGML_VULKAN=1 pip install git+https://github.com/absadiki/pywhispercpp
+# Silently skipped by load_whisper() if not installed or no Vulkan device
+# is found -- falls through to CPU either way, not a hard requirement.

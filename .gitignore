@@ -4,6 +4,7 @@ __pycache__/
 # Model weights and downloaded binaries -- large, re-downloadable, don't belong in git
 models/
 piper_models/
+whisper_cpp_models/
 
 # Experimental venv + extracted CUDA DLLs from the GPU-acceleration investigation
 venv311/

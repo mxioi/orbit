@@ -1,0 +1,4 @@
+# Shell scripts must check out with LF regardless of any clone's local
+# core.autocrlf setting -- a CRLF shebang line ("#!/usr/bin/env bash\r\n")
+# fails on Linux with "bad interpreter: No such file or directory".
+*.sh text eol=lf

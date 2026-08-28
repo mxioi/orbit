@@ -1,0 +1,29 @@
+# Core runtime deps for assistant_app.py / voice_test.py.
+# Versions pinned to what's actually confirmed working on this hardware --
+# CUDA/cuDNN pairing in particular is finicky (see stt.py's comment on why
+# PATH is set manually before the faster_whisper import).
+
+numpy==2.5.2
+sounddevice==0.5.6
+keyboard==0.13.5          # push-to-talk in voice_test.py only, not used by assistant_app.py
+faster-whisper==1.2.1
+ctranslate2==4.8.1        # faster-whisper's backend -- pinned together, version-sensitive
+piper-tts==1.7.0
+onnxruntime==1.29.0       # CPU only -- used by both Piper and vad.py's SileroVAD
+pywebview==6.2.1
+
+# --- Optional: CUDA acceleration for Whisper (stt.py tries cuda, falls back
+# to cpu automatically if these aren't installed or don't load -- skip this
+# block entirely for a CPU-only setup) ---
+nvidia-cublas-cu12==12.9.2.10
+nvidia-cuda-nvrtc-cu12==12.9.86
+nvidia-cuda-runtime-cu12==12.9.79
+nvidia-cudnn-cu12==8.9.7.29
+
+# NOT included: onnxruntime-gpu (leftover from the abandoned Kokoro-TTS-on-
+# GPU experiment -- confirmed a dead end on this card, see tts.py's
+# docstring; installing it alongside plain onnxruntime is redundant and can
+# conflict since both provide the same `onnxruntime` module) and
+# kokoro-onnx / scipy (only benchmark.py's old STT benchmarking script
+# needs kokoro-onnx, to synthesize test audio -- not needed to run the
+# actual assistant).

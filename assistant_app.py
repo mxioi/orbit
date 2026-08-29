@@ -50,6 +50,12 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 AVATAR_HTML = os.path.join(_HERE, "web", "avatar.html")
 VAD_MODEL_PATH = os.path.join(_HERE, "vad_model", "silero_vad.onnx")
 CONFIG_PATH = os.path.join(_HERE, "voice_config.json")
+# Without this, pywebview's Windows backend falls back to extracting python.exe's
+# own icon for the taskbar/window -- generic and not this app's identity. Matches
+# web/avatar.html's idle-state gradient (PALETTE.idle: #ffb27a -> #ff8a5c) so the
+# taskbar icon and the floating orb read as the same thing. Generated once via
+# scratch script, not regenerated at runtime -- see git history for how.
+ICON_PATH = os.path.join(_HERE, "icon.ico")
 
 # Mirror web/avatar.html's PALETTE keys exactly -- these strings are passed
 # straight through to setState() on the JS side. TRANSCRIBING is its own
@@ -580,10 +586,13 @@ def _preflight_check():
 def _build_tray_icon(app_state):
     """A system tray icon + right-click menu, so the floating window can be
     shown/hidden/muted/quit without hunting for a small frameless window
-    that's easy to lose behind other windows once minimized. Icon image is
-    generated on the fly (no asset file to ship) -- a plain filled circle
-    in the avatar's own idle color (web/avatar.html's PALETTE.idle.c2), so
-    it's recognizable at a glance in a crowded tray.
+    that's easy to lose behind other windows once minimized. Reuses
+    ICON_PATH (the same taskbar/window icon set in main()) so the tray,
+    taskbar, and floating orb all read as the same identity instead of
+    each having their own separately-drawn approximation; falls back to a
+    plain filled circle in the avatar's idle color if that file is ever
+    missing (matches this function's own best-effort philosophy -- see
+    below).
 
     Imports are lazy (not at module level) because this is verified working
     on Windows only -- pystray's Linux backends need a system tray protocol
@@ -595,8 +604,11 @@ def _build_tray_icon(app_state):
     import pystray
     from PIL import Image, ImageDraw
 
-    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-    ImageDraw.Draw(img).ellipse((4, 4, 60, 60), fill=(255, 138, 92, 255))
+    if os.path.isfile(ICON_PATH):
+        img = Image.open(ICON_PATH).convert("RGBA")
+    else:
+        img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+        ImageDraw.Draw(img).ellipse((4, 4, 60, 60), fill=(255, 138, 92, 255))
 
     def on_show(icon, item):
         app_state.window.show()
@@ -709,7 +721,7 @@ def main():
             if app_state.ws_id:
                 tc.close_conversation(app_state.ws_id)
 
-    webview.start(worker)
+    webview.start(worker, icon=ICON_PATH if os.path.isfile(ICON_PATH) else None)
 
 
 if __name__ == "__main__":

@@ -236,7 +236,7 @@ function drawSpiralOverlay(cx, cy, baseR, tt, color) {
   for (let i = 0; i < numDots; i++) {
     const frac = i / numDots;
     const angle = i * goldenAngle + tt * 0.6;
-    const radius = baseR * (0.3 + 0.75 * Math.sqrt(frac));
+    const radius = baseR * (0.58 + 0.5 * Math.sqrt(frac)); // starts outside the solid core (~0.5*baseR)
     const x = cx + radius * Math.cos(angle);
     const y = cy + radius * Math.sin(angle);
     const dotR = 1.0 + 2.0 * (1 - frac);
@@ -256,7 +256,7 @@ function drawGridOverlay(cx, cy, baseR, tt, color) {
       const x = cx + col * spacing;
       const y = cy + row * spacing;
       const dist = Math.hypot(x - cx, y - cy);
-      if (dist > baseR * 0.98) continue; // clip to the orb's circle
+      if (dist > baseR * 0.98 || dist < baseR * 0.55) continue; // clip to an annulus outside the solid core
       const phase = (dist / baseR) * 5 - tt * 3; // outward-traveling pulse
       const pulse = Math.sin(phase) * 0.5 + 0.5;
       const dotR = 0.8 + pulse * 2.2;
@@ -332,7 +332,7 @@ function draw() {
 
   const overlay = PARTICLE_OVERLAY[muted ? 'muted' : state];
   if (overlay) {
-    const particleColor = lightenHex(pal.c1, 0.55);
+    const particleColor = lightenHex(pal.c1, 0.2);
     if (overlay === 'spiral') drawSpiralOverlay(cx, cy, baseR, t, particleColor);
     if (overlay === 'grid') drawGridOverlay(cx, cy, baseR, t, particleColor);
     drawRingsOverlay(cx, cy, baseR, t, particleColor);

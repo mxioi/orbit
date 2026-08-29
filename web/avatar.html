@@ -94,35 +94,89 @@ window.addEventListener('resize', resize);
 resize();
 
 // ---- State ----------------------------------------------------------
-let state = 'idle';           // idle | listening | recording | thinking | speaking
+let state = 'idle';           // idle | listening | recording | transcribing | thinking | speaking
 let muted = false;
 let targetAmplitude = 0;      // 0..1, set by setAmplitude(), driven toward by smoothedAmplitude
 let smoothedAmplitude = 0;
 let t = 0;                    // animation clock, seconds
 
-// Per-state color (soft, calm palette -- avoid anything harsh/neon)
+// Warm palette (amber/coral/gold) rather than the blue/violet family most
+// voice-assistant UIs default to -- reads as friendlier/warmer, and stays
+// clear of ChatGPT voice mode's specific blue-dominated look. "thinking"
+// is the one deliberate excursion into rose/violet: giving the (usually
+// longest) wait its own distinct identity is worth breaking the family
+// for. "transcribing" is a brief golden flash -- it's a short state (just
+// the Whisper pass), so it doesn't need its own long-term identity, just
+// to visibly not be "thinking" yet.
 const PALETTE = {
-  idle:      { c1: '#5b6ee8', c2: '#7c5be8' },
-  listening: { c1: '#4fb3e8', c2: '#5b6ee8' },
-  recording: { c1: '#4fd0c0', c2: '#4fb3e8' },
-  thinking:  { c1: '#a55be8', c2: '#5b6ee8' },
-  speaking:  { c1: '#4fd0a8', c2: '#4fb3e8' },
-  muted:     { c1: '#7a7a85', c2: '#5c5c66' },
+  idle:         { c1: '#ffb27a', c2: '#ff8a5c' },
+  listening:    { c1: '#ffd27a', c2: '#ffab5c' },
+  recording:    { c1: '#ff8a6b', c2: '#ff6b5c' },
+  transcribing: { c1: '#ffe27a', c2: '#ffb95c' },
+  thinking:     { c1: '#e87ac9', c2: '#b06bff' },
+  speaking:     { c1: '#ff9a6b', c2: '#ff7a5c' },
+  muted:        { c1: '#7a7a85', c2: '#5c5c66' },
+};
+
+// Per-state motion "personality" -- this is what actually gives each
+// waiting state its own feel, more than color alone. blobAmp controls how
+// far the outline departs from a circle; speed controls how fast that
+// departure rotates/breathes. thinking is deliberately the slowest but
+// largest-amplitude -- a slow, hypnotic churn that's pleasant to watch
+// during what's usually the longest wait in the whole turn, as opposed to
+// a fast pulse that would read as "hurry up" or "something's wrong."
+// transcribing is the opposite: quick and small, since it's a genuinely
+// brief state and a big slow swirl would barely get going before it's
+// over.
+const STATE_MOTION = {
+  idle:         { blobAmp: 0.05, speed: 0.45, breathe: 0.035 },
+  listening:    { blobAmp: 0.06, speed: 0.55, breathe: 0.045 },
+  recording:    { blobAmp: 0.08, speed: 0.85, breathe: 0.015 },
+  transcribing: { blobAmp: 0.11, speed: 2.4,  breathe: 0.0   },
+  thinking:     { blobAmp: 0.18, speed: 0.30, breathe: 0.0   },
+  speaking:     { blobAmp: 0.07, speed: 1.0,  breathe: 0.0   },
+  muted:        { blobAmp: 0.02, speed: 0.2,  breathe: 0.0   },
 };
 
 function currentPalette() {
   return PALETTE[muted ? 'muted' : state] || PALETTE.idle;
 }
 
-// Small deterministic pseudo-noise (no deps) for organic blob wobble --
-// several sine waves at incommensurate frequencies summed together reads
-// as "fluid" rather than a single obvious sine pulse.
-function wobble(phase, seedOffset) {
-  return (
-    Math.sin(phase * 1.00 + seedOffset) * 0.5 +
-    Math.sin(phase * 1.73 + seedOffset * 1.3) * 0.3 +
-    Math.sin(phase * 2.61 + seedOffset * 0.7) * 0.2
-  );
+function currentMotion() {
+  return STATE_MOTION[muted ? 'muted' : state] || STATE_MOTION.idle;
+}
+
+// Traces a smooth, non-circular blob outline as the CURRENT canvas path
+// (caller fills/strokes it) -- an organic, amorphous shape rather than a
+// circle-with-pulsing-radius, which is both a deliberate visual break
+// from the "perfect circle" look most voice assistants use, and the
+// mechanism behind each state's distinct motion "personality" above.
+// Samples `points` radii around the center, each modulated by a few sine
+// harmonics at incommensurate angular frequencies (reads as organic, not
+// mechanically regular), then traces a smooth closed curve through their
+// midpoints via quadraticCurveTo -- the standard canvas technique for a
+// soft blob outline instead of a jagged polygon.
+function blobPath(cx, cy, baseR, seed, amp, speed, points = 10) {
+  const angleStep = (Math.PI * 2) / points;
+  const pts = [];
+  for (let i = 0; i < points; i++) {
+    const angle = i * angleStep;
+    const noise = (
+      Math.sin(angle * 3 + t * speed + seed) * 0.5 +
+      Math.sin(angle * 5 - t * speed * 0.7 + seed * 1.7) * 0.3 +
+      Math.sin(angle * 2 + t * speed * 0.4 + seed * 0.5) * 0.2
+    );
+    const r = baseR * (1 + noise * amp);
+    pts.push([cx + Math.cos(angle) * r, cy + Math.sin(angle) * r]);
+  }
+  const last = pts[points - 1], first = pts[0];
+  ctx.beginPath();
+  ctx.moveTo((last[0] + first[0]) / 2, (last[1] + first[1]) / 2);
+  for (let i = 0; i < points; i++) {
+    const p0 = pts[i], p1 = pts[(i + 1) % points];
+    ctx.quadraticCurveTo(p0[0], p0[1], (p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2);
+  }
+  ctx.closePath();
 }
 
 function draw() {
@@ -136,16 +190,8 @@ function draw() {
   // like harsh jumps -- exponential approach toward the target.
   smoothedAmplitude += (targetAmplitude - smoothedAmplitude) * 0.15;
 
-  // Idle "breathing": slow scale pulse even with no amplitude signal.
-  const breathing = state === 'idle' || state === 'listening'
-    ? Math.sin(t * 0.6) * 0.04
-    : 0;
-
-  // Thinking: a gentle faster pulse, distinct from breathing/speaking.
-  const thinkingPulse = state === 'thinking'
-    ? (Math.sin(t * 2.2) * 0.5 + 0.5) * 0.06
-    : 0;
-
+  const motion = currentMotion();
+  const breathing = Math.sin(t * 0.6) * motion.breathe;
   const ampScale = smoothedAmplitude * 0.35; // how much speech loudness swells the orb
 
   const pal = currentPalette();
@@ -153,8 +199,7 @@ function draw() {
   for (let i = 0; i < layers; i++) {
     const layerSeed = i * 2.1;
     const layerScale = 1 - i * 0.14;
-    const wob = wobble(t * 0.8 + i * 0.5, layerSeed) * 0.06;
-    const r = baseR * layerScale * (1 + breathing + thinkingPulse + ampScale + wob);
+    const r = baseR * layerScale * (1 + breathing + ampScale);
 
     const grad = ctx.createRadialGradient(cx, cy, r * 0.1, cx, cy, r);
     const alpha = 0.22 - i * 0.03;
@@ -162,20 +207,20 @@ function draw() {
     grad.addColorStop(0.6, hexToRgba(pal.c2, alpha));
     grad.addColorStop(1, hexToRgba(pal.c2, 0));
 
-    ctx.beginPath();
     ctx.fillStyle = grad;
-    ctx.arc(cx, cy, Math.max(r, 1), 0, Math.PI * 2);
+    blobPath(cx, cy, Math.max(r, 1), layerSeed, motion.blobAmp, motion.speed);
     ctx.fill();
   }
 
-  // Solid core so the orb reads clearly even when amplitude is 0.
+  // Solid core so the orb reads clearly even when amplitude is 0 -- a
+  // much smaller blob amplitude than the outer layers so it still reads
+  // as a clear "center", just not a perfectly dead circle either.
   const coreR = baseR * 0.5 * (1 + breathing * 0.5 + ampScale * 0.6);
   const coreGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, coreR);
   coreGrad.addColorStop(0, hexToRgba(pal.c1, 0.9));
   coreGrad.addColorStop(1, hexToRgba(pal.c2, 0.55));
-  ctx.beginPath();
   ctx.fillStyle = coreGrad;
-  ctx.arc(cx, cy, Math.max(coreR, 1), 0, Math.PI * 2);
+  blobPath(cx, cy, Math.max(coreR, 1), 9.4, motion.blobAmp * 0.4, motion.speed);
   ctx.fill();
 
   t += 1 / 60;

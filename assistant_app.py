@@ -52,8 +52,14 @@ VAD_MODEL_PATH = os.path.join(_HERE, "vad_model", "silero_vad.onnx")
 CONFIG_PATH = os.path.join(_HERE, "voice_config.json")
 
 # Mirror web/avatar.html's PALETTE keys exactly -- these strings are passed
-# straight through to setState() on the JS side.
-IDLE, LISTENING, RECORDING, THINKING, SPEAKING = "idle", "listening", "recording", "thinking", "speaking"
+# straight through to setState() on the JS side. TRANSCRIBING is its own
+# state (not folded into THINKING) so the avatar can visibly distinguish
+# "running Whisper locally" (brief) from "waiting on the LLM" (usually the
+# longest part of a turn) -- splitting one long undifferentiated wait into
+# labeled stages reads as faster even when the total time is identical.
+IDLE, LISTENING, RECORDING, TRANSCRIBING, THINKING, SPEAKING = (
+    "idle", "listening", "recording", "transcribing", "thinking", "speaking"
+)
 
 # UtteranceDetector's silence_frames_to_end (~800ms) is deliberately long so
 # a mid-sentence pause doesn't cut you off -- which means ~800ms of
@@ -274,8 +280,17 @@ def process_utterance(app_state, whisper_model, piper_voice, audio, known_text=N
     # mic_loop's BARGE_IN_CONFIRM_S handling) -- pass that result through
     # instead of transcribing the same audio a second time.
     try:
-        app_state.set_state(THINKING)
-        text = known_text if known_text is not None else stt.transcribe(whisper_model, audio)
+        if known_text is not None:
+            # A barge-in confirmation already ran Whisper on this audio --
+            # no local transcription work left to show, go straight to
+            # THINKING rather than flashing TRANSCRIBING for something
+            # that's already done.
+            text = known_text
+            app_state.set_state(THINKING)
+        else:
+            app_state.set_state(TRANSCRIBING)
+            text = stt.transcribe(whisper_model, audio)
+            app_state.set_state(THINKING)
         print(f"You said: {text!r}")
         if not text.strip():
             app_state.set_state(LISTENING)
@@ -339,12 +354,13 @@ def mic_loop(app_state, whisper_model, piper_voice):
 
     def callback(indata, frames, time_info, status):
         # Keep the realtime audio callback cheap -- just hand the chunk
-        # off, no VAD/state work here. Still drop audio during THINKING
-        # (interrupting a live Turnstone round-trip is out of scope, and
-        # we'd otherwise just be queueing audio nothing will consume for
-        # however long that takes) and while muted. SPEAKING is let
-        # through -- that's what makes barge-in possible.
-        if app_state.muted or app_state.state == THINKING:
+        # off, no VAD/state work here. Still drop audio during
+        # TRANSCRIBING/THINKING (nothing is playing yet for barge-in to
+        # apply to, and interrupting a live Turnstone round-trip is out of
+        # scope anyway -- we'd otherwise just be queueing audio nothing
+        # will consume for however long that takes) and while muted.
+        # SPEAKING is let through -- that's what makes barge-in possible.
+        if app_state.muted or app_state.state in (TRANSCRIBING, THINKING):
             return
         audio_q.put(indata[:, 0].copy())
 
@@ -410,7 +426,7 @@ def mic_loop(app_state, whisper_model, piper_voice):
             was_muted = False
             app_state.set_state(LISTENING)
 
-        if app_state.state == THINKING:
+        if app_state.state in (TRANSCRIBING, THINKING):
             time.sleep(0.05)
             continue
 

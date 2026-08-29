@@ -39,6 +39,26 @@ Runs on Windows and Linux, with GPU acceleration for NVIDIA (CUDA) and AMD/Intel
   without hunting for a small frameless window behind other apps. Windows-only
   for now (see Known limitations).
 
+## Privacy
+
+Orbit's mic is **always on** while the app is running -- there's no push-to-talk
+button, by design (see Features above). It's continuously listening for speech via
+local voice-activity detection, not continuously recording, but it's worth being
+explicit about what that means and where things actually go:
+
+- **Audio never leaves your machine.** Speech-to-text (Whisper) and text-to-speech
+  (Piper) both run entirely locally. Raw audio is never sent anywhere.
+- **The transcribed text of what you say is sent to your Turnstone server** (whatever
+  `TURNSTONE_CONSOLE_BASE` points at) to get a response -- that's the one network
+  request this app makes with anything you've said. If that's your own
+  self-hosted Turnstone instance, this stays on your own infrastructure.
+- **If your Turnstone server is itself configured to use a third-party LLM API**
+  (Anthropic, OpenAI, or similar) as its backend, the transcribed text of your
+  speech gets forwarded there too, as part of Turnstone generating a response --
+  that's a property of how you've configured Turnstone, not something this app
+  does directly, but it's a real hop your words take that's easy to lose track of.
+  Check your Turnstone server's own configuration if that distinction matters to you.
+
 ## Setup
 
 ### Windows

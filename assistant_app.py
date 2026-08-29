@@ -522,7 +522,51 @@ def mic_loop(app_state, whisper_model, piper_voice):
     print("Mic loop stopped (window closed).")
 
 
+def _preflight_check():
+    """Fail fast with one clear, actionable message before opening any
+    window, instead of two much worse first-run experiences this project
+    actually hit during development: a raw FileNotFoundError traceback
+    from deep inside a background thread when piper_models/ is missing
+    (worker() -> piper_future.result() re-raises it with no guidance --
+    confirmed live earlier in this project), or a confusing connection
+    error only once the mic loop is already running, if CONSOLE_BASE is
+    still the unconfigured placeholder. The Turnstone token already gets
+    this treatment (see turnstone_client.py's own SystemExit at import
+    time) -- this covers the other two prerequisites that didn't have
+    one yet.
+    """
+    problems = []
+    if not os.path.isfile(VAD_MODEL_PATH):
+        problems.append(
+            f"VAD model not found at {VAD_MODEL_PATH!r}.\n"
+            f"    This ships with the repo -- if it's missing, re-clone or check "
+            f"vad_model/ wasn't excluded."
+        )
+    piper_onnx = tts.PIPER_MODEL
+    piper_json = piper_onnx + ".json"
+    if not (os.path.isfile(piper_onnx) and os.path.isfile(piper_json)):
+        problems.append(
+            f"Piper voice model not found ({piper_onnx} + .json).\n"
+            f"    Download it from "
+            f"https://github.com/rhasspy/piper/blob/master/VOICES.md and place "
+            f"both files under piper_models/ next to this script."
+        )
+    if tc.CONSOLE_BASE == "http://your-turnstone-host:8095/v1/api":
+        problems.append(
+            "No Turnstone console address configured (still using the "
+            "placeholder).\n"
+            "    Set the TURNSTONE_CONSOLE_BASE env var, or put your real "
+            "console URL in a .turnstone_console_base file next to this script."
+        )
+    if problems:
+        print("\nOrbit can't start yet -- missing setup:\n")
+        for i, p in enumerate(problems, 1):
+            print(f"{i}. {p}\n")
+        raise SystemExit(1)
+
+
 def main():
+    _preflight_check()
     app_state = AssistantState()
     api = Api(app_state)
 

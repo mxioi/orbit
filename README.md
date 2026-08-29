@@ -113,8 +113,13 @@ self-contained, so it's a contained change.
   mitigated by requiring a real transcription before treating anything as a genuine
   interruption, but isn't a substitute for real AEC.
 - Real desktop transparency (`transparent=True`) doesn't work on Windows in
-  pywebview 6.2.1 — the window uses a solid dark background color instead. Untested
-  on Linux (couldn't be visually verified in the dev environment this was built in).
+  pywebview 6.2.1 — the window uses a solid dark background color instead. The
+  obvious workaround, WinForms' `TransparencyKey` color-keying, was prototyped and
+  rejected: it only punches through pixels that exactly match the key color, so the
+  avatar's soft alpha-gradient glow renders as a hard-edged flat color instead of
+  blending into the desktop — confirmed live via screenshot, a clear regression
+  from the current solid-background look, not an improvement. Untested on Linux
+  (couldn't be visually verified in the dev environment this was built in).
 - The Vulkan STT backend needs a from-source build and hasn't been tested on AMD
   hardware yet (verified on Intel; should work on AMD too, since Vulkan itself is
   vendor-neutral, but that's not yet confirmed on real AMD silicon).

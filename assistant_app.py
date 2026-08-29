@@ -488,6 +488,12 @@ def mic_loop(app_state, whisper_model, piper_voice):
                     print("[mic] barge-in candidate had no recognizable words -- ignoring, TTS continues")
                     detector = UtteranceDetector()  # this one thinks it's mid-utterance; needs a clean reset
             else:
+                # Fire-and-forget: instant feedback that something was
+                # heard, before the (much slower, seconds-scale) STT/LLM
+                # round-trip even starts. Mic capture is already dropped
+                # during TRANSCRIBING/THINKING (see callback() above), so
+                # this can't bleed into the next utterance's recording.
+                tts.play_ack_chime()
                 process_utterance(app_state, whisper_model, piper_voice, audio)
 
         # Barge-in candidate ran long enough to hit the confirmation cap

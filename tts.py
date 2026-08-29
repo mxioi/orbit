@@ -73,6 +73,28 @@ def strip_markdown_for_speech(text):
     return text.strip()
 
 
+def play_ack_chime():
+    """Instant audio feedback the moment VAD decides you've stopped talking
+    -- fires before STT/LLM latency even starts, so there's *something*
+    immediately in response to speaking rather than dead air until a reply
+    eventually arrives. Synthesized on the fly (no asset file to ship/load);
+    two quick soft ascending tones with a raised-cosine envelope on each to
+    avoid audible clicks at the start/end of a tone. sd.play() without a
+    following sd.wait() is non-blocking -- the caller (mic_loop) continues
+    immediately without waiting for this ~120ms sound to finish."""
+    sr = 22050
+
+    def tone(freq, dur):
+        n = int(sr * dur)
+        t = np.arange(n) / sr
+        envelope = np.sin(np.pi * t / dur) ** 2
+        return (np.sin(2 * np.pi * freq * t) * envelope).astype(np.float32)
+
+    gap = np.zeros(int(sr * 0.015), dtype=np.float32)
+    chime = np.concatenate([tone(660, 0.045), gap, tone(880, 0.06)]) * 0.25
+    sd.play(chime, sr)
+
+
 def speak(piper_voice, text, on_amplitude=None, stop_event=None):
     """Synthesize and play text. If on_amplitude is given, it's called
     repeatedly during playback with a 0..1 loudness estimate (for driving

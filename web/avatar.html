@@ -94,7 +94,7 @@ window.addEventListener('resize', resize);
 resize();
 
 // ---- State ----------------------------------------------------------
-let state = 'idle';           // idle | listening | recording | transcribing | thinking | speaking
+let state = 'idle';           // idle | listening | recording | transcribing | thinking | synthesizing | speaking
 let muted = false;
 let targetAmplitude = 0;      // 0..1, set by setAmplitude(), driven toward by smoothedAmplitude
 let smoothedAmplitude = 0;
@@ -107,13 +107,19 @@ let t = 0;                    // animation clock, seconds
 // longest) wait its own distinct identity is worth breaking the family
 // for. "transcribing" is a brief golden flash -- it's a short state (just
 // the Whisper pass), so it doesn't need its own long-term identity, just
-// to visibly not be "thinking" yet.
+// to visibly not be "thinking" yet. "synthesizing" sits visually between
+// "thinking" (violet) and "speaking" (coral) -- a warm pink partway along
+// that gradient, since it's literally the transition between the two: the
+// LLM answer is in, Piper is turning it into audio, but nothing's audible
+// yet (see assistant_app.py's SYNTHESIZING state comment for why that
+// distinction matters).
 const PALETTE = {
   idle:         { c1: '#ffb27a', c2: '#ff8a5c' },
   listening:    { c1: '#ffd27a', c2: '#ffab5c' },
   recording:    { c1: '#ff8a6b', c2: '#ff6b5c' },
   transcribing: { c1: '#ffe27a', c2: '#ffb95c' },
   thinking:     { c1: '#e87ac9', c2: '#b06bff' },
+  synthesizing: { c1: '#ff8ab0', c2: '#ff6b8a' },
   speaking:     { c1: '#ff9a6b', c2: '#ff7a5c' },
   muted:        { c1: '#7a7a85', c2: '#5c5c66' },
 };
@@ -134,6 +140,7 @@ const STATE_MOTION = {
   recording:    { blobAmp: 0.08, speed: 0.85, breathe: 0.015 },
   transcribing: { blobAmp: 0.11, speed: 2.4,  breathe: 0.0   },
   thinking:     { blobAmp: 0.18, speed: 0.30, breathe: 0.0   },
+  synthesizing: { blobAmp: 0.09, speed: 1.6,  breathe: 0.0   },
   speaking:     { blobAmp: 0.07, speed: 1.0,  breathe: 0.0   },
   muted:        { blobAmp: 0.02, speed: 0.2,  breathe: 0.0   },
 };

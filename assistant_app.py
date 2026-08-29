@@ -63,8 +63,15 @@ ICON_PATH = os.path.join(_HERE, "icon.ico")
 # "running Whisper locally" (brief) from "waiting on the LLM" (usually the
 # longest part of a turn) -- splitting one long undifferentiated wait into
 # labeled stages reads as faster even when the total time is identical.
-IDLE, LISTENING, RECORDING, TRANSCRIBING, THINKING, SPEAKING = (
-    "idle", "listening", "recording", "transcribing", "thinking", "speaking"
+# SYNTHESIZING is the same idea applied to TTS: Piper's synthesize() call
+# (inside tts.speak(), before any audio is actually written to the output
+# stream) takes real, sometimes-not-brief time, but the code previously set
+# SPEAKING the instant process_utterance() kicked off the TTS thread -- the
+# avatar looked like it was already talking while still completely silent.
+# Confirmed live: for anything but a very short reply, there's a real,
+# noticeable gap between "avatar says SPEAKING" and "sound actually starts."
+IDLE, LISTENING, RECORDING, TRANSCRIBING, THINKING, SYNTHESIZING, SPEAKING = (
+    "idle", "listening", "recording", "transcribing", "thinking", "synthesizing", "speaking"
 )
 
 # UtteranceDetector's silence_frames_to_end (~800ms) is deliberately long so
@@ -289,9 +296,11 @@ def process_utterance(app_state, whisper_model, piper_voice, audio, known_text=N
     # try/except -- an uncaught exception here (a Turnstone network
     # hiccup, a transient Whisper/Piper error) would otherwise kill that
     # background thread silently, leaving the avatar stuck showing
-    # THINKING/SPEAKING forever with no crash to even notice. Catch
-    # broadly and always fall back to LISTENING so one bad turn doesn't
-    # require restarting the app.
+    # TRANSCRIBING/THINKING forever with no crash to even notice (this
+    # try/except covers STT + the Turnstone call only -- TTS's own
+    # SYNTHESIZING/SPEAKING states are protected separately, by _speak()'s
+    # own try/except further down). Catch broadly and always fall back to
+    # LISTENING so one bad turn doesn't require restarting the app.
     #
     # known_text: a confirmed barge-in already ran this exact audio
     # through Whisper once to decide whether it was real speech (see
@@ -336,8 +345,26 @@ def process_utterance(app_state, whisper_model, piper_voice, audio, known_text=N
     # function blocked on tts.speak() directly; that's why barge-in wasn't
     # possible before -- the one thread that could've noticed you talking
     # was busy sitting inside the TTS call.)
-    app_state.set_state(SPEAKING)
+    #
+    # SYNTHESIZING here, not SPEAKING -- tts.speak()'s on_synthesis_done
+    # callback (below) is what actually flips to SPEAKING, once Piper's
+    # synthesize() call has finished and real audio is about to start
+    # playing. Setting SPEAKING this early (the previous behavior) made
+    # the avatar look like it was already talking during what's often a
+    # very much not instant synthesis step.
+    app_state.set_state(SYNTHESIZING)
     stop_event = threading.Event()  # this turn's own -- see AssistantState's __init__ comment
+
+    def _on_synthesis_done():
+        # Guard against a race with mic_loop's thread already having moved
+        # state on (e.g. a fresh recording starting) by the time synthesis
+        # finishes -- mirrors the same "only move on from the state we
+        # expect" pattern the finally block below uses for SPEAKING ->
+        # LISTENING. Audio is dropped during SYNTHESIZING (see mic_loop's
+        # callback filter), so this specific race is unlikely in practice,
+        # but cheap to guard regardless.
+        if app_state.state == SYNTHESIZING:
+            app_state.set_state(SPEAKING)
 
     def _speak():
         try:
@@ -345,6 +372,7 @@ def process_utterance(app_state, whisper_model, piper_voice, audio, known_text=N
                 piper_voice, response,
                 on_amplitude=app_state.set_amplitude,
                 stop_event=stop_event,
+                on_synthesis_done=_on_synthesis_done,
             )
         except Exception as e:
             print(f"[tts] playback failed: {e!r}")
@@ -355,8 +383,11 @@ def process_utterance(app_state, whisper_model, piper_voice, audio, known_text=N
             # ends up running last, the final state is correct either way:
             # if barge-in already fired, don't stomp RECORDING back to
             # LISTENING; if playback just finished naturally, do the
-            # normal reset).
-            if app_state.state == SPEAKING:
+            # normal reset). Covers SYNTHESIZING too -- e.g. an empty/
+            # whitespace-only synthesis result never calls
+            # on_synthesis_done at all (see tts.speak()), so state can
+            # still be SYNTHESIZING here rather than SPEAKING.
+            if app_state.state in (SYNTHESIZING, SPEAKING):
                 app_state.set_state(LISTENING)
 
     thread = threading.Thread(target=_speak, daemon=True)
@@ -373,12 +404,14 @@ def mic_loop(app_state, whisper_model, piper_voice):
     def callback(indata, frames, time_info, status):
         # Keep the realtime audio callback cheap -- just hand the chunk
         # off, no VAD/state work here. Still drop audio during
-        # TRANSCRIBING/THINKING (nothing is playing yet for barge-in to
-        # apply to, and interrupting a live Turnstone round-trip is out of
-        # scope anyway -- we'd otherwise just be queueing audio nothing
-        # will consume for however long that takes) and while muted.
-        # SPEAKING is let through -- that's what makes barge-in possible.
-        if app_state.muted or app_state.state in (TRANSCRIBING, THINKING):
+        # TRANSCRIBING/THINKING/SYNTHESIZING (nothing is playing yet for
+        # barge-in to apply to in any of the three -- interrupting a live
+        # Turnstone round-trip is out of scope, and there's no audio yet
+        # during synthesis either -- we'd otherwise just be queueing audio
+        # nothing will consume for however long that takes) and while
+        # muted. SPEAKING is let through -- that's what makes barge-in
+        # possible, once there's actually something audible to interrupt.
+        if app_state.muted or app_state.state in (TRANSCRIBING, THINKING, SYNTHESIZING):
             return
         audio_q.put(indata[:, 0].copy())
 
@@ -444,7 +477,7 @@ def mic_loop(app_state, whisper_model, piper_voice):
             was_muted = False
             app_state.set_state(LISTENING)
 
-        if app_state.state in (TRANSCRIBING, THINKING):
+        if app_state.state in (TRANSCRIBING, THINKING, SYNTHESIZING):
             time.sleep(0.05)
             continue
 

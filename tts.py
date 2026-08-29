@@ -95,7 +95,7 @@ def play_ack_chime():
     sd.play(chime, sr)
 
 
-def speak(piper_voice, text, on_amplitude=None, stop_event=None):
+def speak(piper_voice, text, on_amplitude=None, stop_event=None, on_synthesis_done=None):
     """Synthesize and play text. If on_amplitude is given, it's called
     repeatedly during playback with a 0..1 loudness estimate (for driving
     the avatar's speech-reactive swell) and once more with 0.0 when done.
@@ -105,6 +105,17 @@ def speak(piper_voice, text, on_amplitude=None, stop_event=None):
     it's set -- for barge-in, where "immediately" matters (stream.stop()
     would instead let whatever's already buffered on the audio device
     finish playing out first, not the instant cutoff barge-in needs).
+
+    on_synthesis_done, if given, fires once piper_voice.synthesize() has
+    actually finished and real audio is about to start playing -- NOT
+    called at all if there's nothing to speak (empty/whitespace-only
+    text), since there's no playback about to start in that case either.
+    assistant_app.py uses this to only flip the avatar to its SPEAKING
+    state once synthesis (which can take real, sometimes-not-brief time)
+    is done, instead of the instant this function is called -- confirmed
+    live: without this, the avatar looked like it was already talking
+    while still completely silent, for however long synthesis took.
+
     Returns True if playback completed normally, False if it was stopped
     early via stop_event."""
     clean = strip_markdown_for_speech(text)
@@ -113,6 +124,8 @@ def speak(piper_voice, text, on_amplitude=None, stop_event=None):
         return True
     audio = np.concatenate([c.audio_int16_array for c in chunks])
     sample_rate = chunks[0].sample_rate
+    if on_synthesis_done:
+        on_synthesis_done()
 
     if on_amplitude is None and stop_event is None:
         sd.play(audio, sample_rate)

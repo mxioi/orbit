@@ -185,6 +185,18 @@ class AssistantState:
 
     def set_muted(self, is_muted):
         self.muted = is_muted
+        # Only avatar.html's own mute-button click handler previously kept
+        # the JS-side icon in sync (it calls setMuted() locally right after
+        # telling Python) -- fine as long as Python-side muted only ever
+        # changed in response to that click. Now that the tray icon can
+        # also flip this flag, push it to JS here too so the floating
+        # window's icon doesn't go stale when muted from the tray instead.
+        # setMuted() is idempotent, so this is a harmless no-op on the
+        # original JS-initiated path.
+        try:
+            self.window.evaluate_js(f"setMuted({str(is_muted).lower()})")
+        except Exception:
+            pass
 
 
 class Api:
@@ -565,6 +577,50 @@ def _preflight_check():
         raise SystemExit(1)
 
 
+def _build_tray_icon(app_state):
+    """A system tray icon + right-click menu, so the floating window can be
+    shown/hidden/muted/quit without hunting for a small frameless window
+    that's easy to lose behind other windows once minimized. Icon image is
+    generated on the fly (no asset file to ship) -- a plain filled circle
+    in the avatar's own idle color (web/avatar.html's PALETTE.idle.c2), so
+    it's recognizable at a glance in a crowded tray.
+
+    Imports are lazy (not at module level) because this is verified working
+    on Windows only -- pystray's Linux backends need a system tray protocol
+    (AppIndicator3, or a DE that still supports the legacy systray spec)
+    that install-linux.sh doesn't provision, and this project has no way to
+    verify that here. Callers should treat this as best-effort: see
+    main()'s try/except around calling this.
+    """
+    import pystray
+    from PIL import Image, ImageDraw
+
+    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    ImageDraw.Draw(img).ellipse((4, 4, 60, 60), fill=(255, 138, 92, 255))
+
+    def on_show(icon, item):
+        app_state.window.show()
+        app_state.window.restore()
+
+    def on_hide(icon, item):
+        app_state.window.hide()
+
+    def on_toggle_mute(icon, item):
+        app_state.set_muted(not app_state.muted)
+
+    def on_quit(icon, item):
+        icon.stop()
+        app_state.window.destroy()
+
+    menu = pystray.Menu(
+        pystray.MenuItem("Show", on_show, default=True),
+        pystray.MenuItem("Hide", on_hide),
+        pystray.MenuItem("Muted", on_toggle_mute, checked=lambda item: app_state.muted),
+        pystray.MenuItem("Quit", on_quit),
+    )
+    return pystray.Icon("orbit", img, "Orbit", menu)
+
+
 def main():
     _preflight_check()
     app_state = AssistantState()
@@ -613,6 +669,30 @@ def main():
     # stream and let close_conversation() run in worker()'s finally block
     # instead of leaving a non-daemon thread hanging after the window closes.
     window.events.closing += app_state.shutdown.set
+
+    # pystray needs its own run loop; on Windows (unlike macOS) it's fine
+    # off the main thread, which pywebview's own loop (webview.start below)
+    # needs for itself. Stop it alongside the window closing so it doesn't
+    # linger as an orphaned tray icon after the app exits. Best-effort: a
+    # missing/unsupported tray backend (expected on some Linux setups, see
+    # _build_tray_icon's docstring) shouldn't take down the whole assistant
+    # over what's just a convenience feature.
+    def _run_tray_icon(icon):
+        # Runs on its own daemon thread -- an exception here would
+        # otherwise just print an unhandled-thread-exception traceback
+        # (Python's default) instead of this project's usual clear,
+        # one-line "here's what happened and it's not fatal" message.
+        try:
+            icon.run()
+        except Exception as e:
+            print(f"[tray] system tray icon unavailable, continuing without it: {e!r}")
+
+    try:
+        tray_icon = _build_tray_icon(app_state)
+        threading.Thread(target=_run_tray_icon, args=(tray_icon,), daemon=True).start()
+        window.events.closing += tray_icon.stop
+    except Exception as e:
+        print(f"[tray] system tray icon unavailable, continuing without it: {e!r}")
 
     def worker():
         # Piper's load+warmup overlaps with Whisper loading instead of

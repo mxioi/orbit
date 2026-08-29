@@ -35,6 +35,9 @@ Runs on Windows and Linux, with GPU acceleration for NVIDIA (CUDA) and AMD/Intel
   (Vulkan).
 - **`voice_test.py`** — a simpler push-to-talk CLI fallback, sharing the same
   STT/TTS/Turnstone modules, useful for quick sanity checks without the GUI.
+- **System tray icon** — show/hide the floating window, toggle mute, or quit
+  without hunting for a small frameless window behind other apps. Windows-only
+  for now (see Known limitations).
 
 ## Setup
 
@@ -123,6 +126,12 @@ self-contained, so it's a contained change.
 - The Vulkan STT backend needs a from-source build and hasn't been tested on AMD
   hardware yet (verified on Intel; should work on AMD too, since Vulkan itself is
   vendor-neutral, but that's not yet confirmed on real AMD silicon).
+- The system tray icon is verified on Windows only. On Linux it needs an actual
+  system tray protocol available (AppIndicator3/ayatana, or a desktop environment
+  still supporting the legacy freedesktop systray spec) that `install-linux.sh`
+  doesn't provision — untested there. Fails gracefully either way: a missing/
+  unsupported tray backend logs a warning and the assistant runs normally without
+  the tray icon, rather than failing to start.
 - No packaged installer yet (deliberately — see `requirements-linux.txt`'s comments
   for why a plain script is the right stage for this project right now). A frozen
   binary is a reasonable next step once the app's been run on a few more real

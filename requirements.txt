@@ -11,6 +11,8 @@ ctranslate2==4.8.1        # faster-whisper's backend -- pinned together, version
 piper-tts==1.7.0
 onnxruntime==1.29.0       # CPU only -- used by both Piper and vad.py's SileroVAD
 pywebview==6.2.1
+pystray==0.19.5           # system tray icon
+Pillow==12.2.0            # tray icon image generation
 
 # --- Optional: CUDA acceleration for Whisper (stt.py tries cuda, falls back
 # to cpu automatically if these aren't installed or don't load -- skip this

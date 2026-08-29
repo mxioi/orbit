@@ -31,6 +31,18 @@ onnxruntime==1.29.0       # CPU only -- used by both Piper and vad.py's SileroVA
 pywebview==6.2.1
 PyGObject==3.58.0         # pywebview's Linux GUI backend (GTK bindings) -- needs libgirepository-2.0-dev to build
 pycairo==1.29.1           # PyGObject's own dependency
+pystray==0.19.5           # system tray icon -- verified on Windows only, see below
+Pillow==12.2.0            # tray icon image generation
+
+# pystray's Linux backends need an actual system tray protocol available
+# (AppIndicator3/ayatana-appindicator, or a desktop environment that still
+# supports the legacy freedesktop systray spec) -- install-linux.sh doesn't
+# provision gir1.2-appindicator3-0.1 (or the ayatana equivalent), and this
+# hasn't been verified against a real Linux desktop tray at all. Harmless
+# either way: assistant_app.py wraps tray icon setup in a try/except and
+# logs a one-line warning instead of failing to start if no backend is
+# available, so this is a nice-to-have here, not a hard requirement like
+# PyGObject/pycairo above.
 
 # --- Optional: GPU-accelerated STT on AMD/Intel GPUs (NVIDIA already gets
 # GPU accel above, via CUDA/faster-whisper) -- NOT installed by this file or

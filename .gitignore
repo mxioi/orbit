@@ -19,3 +19,8 @@ cudnn9_download/
 
 # Per-machine user preference (VAD sensitivity etc.), not project config
 voice_config.json
+
+# Written only when launched with no console attached (e.g. via
+# create_shortcut.ps1's Start Menu shortcut, which uses pythonw.exe) --
+# see assistant_app.py's sys.stdout redirect at the top of the file
+orbit.log

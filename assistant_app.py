@@ -21,7 +21,25 @@ import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if sys.stdout is None:
+    # pythonw.exe (used by create_shortcut.ps1's Start Menu shortcut, to
+    # launch without a console window behind the floating avatar) sets
+    # BOTH sys.stdout and sys.stderr to None when launched with no console
+    # attached at all -- confirmed live via Start-Process (a plain shell
+    # inheriting a console, e.g. running this from a terminal, does NOT
+    # hit this; only a truly detached launch does). Every print() call in
+    # this codebase (there are many -- mic-debug, mic-heartbeat, Turnstone
+    # responses, preflight failures) would otherwise crash the instant
+    # it's reached, and since stderr is ALSO None, that crash is entirely
+    # invisible: confirmed live, the shortcut-launched process exited
+    # within about a second with zero trace anywhere. Redirect both to a
+    # real log file instead so this is debuggable rather than silent.
+    _log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "orbit.log")
+    _log_file = open(_log_path, "w", encoding="utf-8", errors="replace", buffering=1)
+    sys.stdout = _log_file
+    sys.stderr = _log_file
+else:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 IS_WINDOWS = sys.platform == "win32"
 

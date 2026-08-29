@@ -47,6 +47,12 @@ Runs on Windows and Linux, with GPU acceleration for NVIDIA (CUDA) and AMD/Intel
 pip install -r requirements.txt
 ```
 
+Optionally, once dependencies are installed, run `.\create_shortcut.ps1` to add a
+"Orbit" entry to the Start Menu (findable via Windows Search) that launches with
+`pythonw.exe` -- no console window behind the floating avatar. Safe to re-run any
+time; it just overwrites the existing shortcut. Auto-detects a `.venv`/`venv311`/
+`venv` folder in this directory, falling back to whatever `pythonw.exe` is on PATH.
+
 ### Linux
 
 ```

@@ -186,6 +186,68 @@ function blobPath(cx, cy, baseR, seed, amp, speed, points = 10) {
   ctx.closePath();
 }
 
+// Dot-particle overlays for the "processing" states (transcribing/thinking/
+// synthesizing) -- on top of the blob's own per-state motion, not instead
+// of it, per direct feedback that the blob's organic wobble alone read as
+// too subtle to clearly say "something is happening." Two styles, mapped
+// per state below: a slow-rotating spiral (phyllotaxis: each dot placed at
+// the golden angle from the last, radius growing with sqrt(index) -- the
+// standard technique for an evenly-filled, naturalistic "galaxy" spiral,
+// as opposed to distinct rigid arms) for thinking, since it's usually the
+// longest wait and can support something slower/more mesmerizing; and a
+// pulsing grid (dots on a square lattice, clipped to the orb's circle,
+// each one's size/brightness driven by an outward-traveling sine wave
+// keyed on its own distance from center) for transcribing/synthesizing,
+// since those are meant to read as quick, not something you'd want to
+// stare at for a while. Both use a warm off-white so they read as a
+// distinct "activity" layer against any of the underlying per-state hues,
+// rather than blending into the blob's own color.
+const PARTICLE_OVERLAY = {
+  thinking: 'spiral',
+  transcribing: 'grid',
+  synthesizing: 'grid',
+};
+const PARTICLE_COLOR = '#fff4e8';
+
+function drawSpiralOverlay(cx, cy, baseR, tt) {
+  const numDots = 110;
+  const goldenAngle = 2.399963; // ~137.5 degrees in radians
+  for (let i = 0; i < numDots; i++) {
+    const frac = i / numDots;
+    const angle = i * goldenAngle + tt * 0.6;
+    const radius = baseR * (0.3 + 0.75 * Math.sqrt(frac));
+    const x = cx + radius * Math.cos(angle);
+    const y = cy + radius * Math.sin(angle);
+    const dotR = 1.0 + 2.0 * (1 - frac);
+    const alpha = 0.3 + 0.55 * (1 - frac);
+    ctx.beginPath();
+    ctx.arc(x, y, dotR, 0, Math.PI * 2);
+    ctx.fillStyle = hexToRgba(PARTICLE_COLOR, alpha);
+    ctx.fill();
+  }
+}
+
+function drawGridOverlay(cx, cy, baseR, tt) {
+  const spacing = baseR * 0.22;
+  const n = Math.ceil((baseR * 1.05) / spacing);
+  for (let row = -n; row <= n; row++) {
+    for (let col = -n; col <= n; col++) {
+      const x = cx + col * spacing;
+      const y = cy + row * spacing;
+      const dist = Math.hypot(x - cx, y - cy);
+      if (dist > baseR * 0.98) continue; // clip to the orb's circle
+      const phase = (dist / baseR) * 5 - tt * 3; // outward-traveling pulse
+      const pulse = Math.sin(phase) * 0.5 + 0.5;
+      const dotR = 0.8 + pulse * 2.2;
+      const alpha = 0.12 + pulse * 0.55;
+      ctx.beginPath();
+      ctx.arc(x, y, dotR, 0, Math.PI * 2);
+      ctx.fillStyle = hexToRgba(PARTICLE_COLOR, alpha);
+      ctx.fill();
+    }
+  }
+}
+
 function draw() {
   const w = window.innerWidth, h = window.innerHeight;
   ctx.clearRect(0, 0, w, h);
@@ -229,6 +291,10 @@ function draw() {
   ctx.fillStyle = coreGrad;
   blobPath(cx, cy, Math.max(coreR, 1), 9.4, motion.blobAmp * 0.4, motion.speed);
   ctx.fill();
+
+  const overlay = PARTICLE_OVERLAY[muted ? 'muted' : state];
+  if (overlay === 'spiral') drawSpiralOverlay(cx, cy, baseR, t);
+  if (overlay === 'grid') drawGridOverlay(cx, cy, baseR, t);
 
   t += 1 / 60;
   window.__frameCount = (window.__frameCount || 0) + 1; // exposed for automated testing

@@ -9,6 +9,7 @@ Superseded for daily use by assistant_app.py (GUI + VAD instead of
 push-to-talk), kept as a lightweight terminal-only fallback and as the
 simplest place to sanity-check STT/TTS/Turnstone changes without the GUI.
 """
+import os
 import sys
 import time
 
@@ -49,7 +50,41 @@ def record():
     return np.concatenate(chunks).flatten()
 
 
+def _preflight_check():
+    """Same rationale as assistant_app.py's _preflight_check() -- fail fast
+    with one clear, actionable message instead of a raw FileNotFoundError
+    the first time tts.speak() actually needs the Piper model (previously
+    surfaced deep in the run, after a full record/transcribe/Turnstone
+    round-trip had already happened), or a confusing connection error if
+    CONSOLE_BASE is still the unconfigured placeholder. No VAD model check
+    here -- unlike assistant_app.py, this is push-to-talk and never touches
+    vad.py at all."""
+    problems = []
+    piper_onnx = tts.PIPER_MODEL
+    piper_json = piper_onnx + ".json"
+    if not (os.path.isfile(piper_onnx) and os.path.isfile(piper_json)):
+        problems.append(
+            f"Piper voice model not found ({piper_onnx} + .json).\n"
+            f"    Download it from "
+            f"https://github.com/rhasspy/piper/blob/master/VOICES.md and place "
+            f"both files under piper_models/ next to this script."
+        )
+    if tc.CONSOLE_BASE == "http://your-turnstone-host:8095/v1/api":
+        problems.append(
+            "No Turnstone console address configured (still using the "
+            "placeholder).\n"
+            "    Set the TURNSTONE_CONSOLE_BASE env var, or put your real "
+            "console URL in a .turnstone_console_base file next to this script."
+        )
+    if problems:
+        print("\nOrbit can't start yet -- missing setup:\n")
+        for i, p in enumerate(problems, 1):
+            print(f"{i}. {p}\n")
+        raise SystemExit(1)
+
+
 def main():
+    _preflight_check()
     # Piper's load+warmup runs on a background thread so it overlaps with
     # Whisper loading and the first turn's record/transcribe/Turnstone-wait
     # time instead of adding to it -- by the time speak() is actually
